@@ -6,7 +6,7 @@ metadata:
     {{- include "cloudfront-tenant-operator.labels" . | nindent 4 }}
 rules:
   - apiGroups:
-      - cloudfront.cloudfront-tenant-operator.io
+      - cloudfront-tenant-operator.io
     resources:
       - distributiontenants
     verbs:
@@ -18,13 +18,13 @@ rules:
       - update
       - watch
   - apiGroups:
-      - cloudfront.cloudfront-tenant-operator.io
+      - cloudfront-tenant-operator.io
     resources:
       - distributiontenants/finalizers
     verbs:
       - update
   - apiGroups:
-      - cloudfront.cloudfront-tenant-operator.io
+      - cloudfront-tenant-operator.io
     resources:
       - distributiontenants/status
     verbs:

@@ -50,9 +50,9 @@ type DistributionTenantReconciler struct {
 	Recorder record.EventRecorder
 }
 
-// +kubebuilder:rbac:groups=cloudfront.cloudfront-tenant-operator.io,resources=distributiontenants,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=cloudfront.cloudfront-tenant-operator.io,resources=distributiontenants/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=cloudfront.cloudfront-tenant-operator.io,resources=distributiontenants/finalizers,verbs=update
+// +kubebuilder:rbac:groups=cloudfront-tenant-operator.io,resources=distributiontenants,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=cloudfront-tenant-operator.io,resources=distributiontenants/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=cloudfront-tenant-operator.io,resources=distributiontenants/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile is the main reconciliation loop for DistributionTenant resources.

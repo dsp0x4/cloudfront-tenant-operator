@@ -78,7 +78,7 @@ make deploy IMG=<your-registry>/cloudfront-tenant-operator:latest
 ### Create a Distribution Tenant
 
 ```yaml
-apiVersion: cloudfront.cloudfront-tenant-operator.io/v1alpha1
+apiVersion: cloudfront-tenant-operator.io/v1alpha1
 kind: DistributionTenant
 metadata:
   name: my-tenant

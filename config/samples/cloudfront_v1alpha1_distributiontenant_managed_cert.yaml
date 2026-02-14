@@ -2,7 +2,7 @@
 # CloudFront will request and manage an ACM certificate automatically.
 # DNS CNAME records must point to the CloudFront distribution before the
 # certificate can be validated.
-apiVersion: cloudfront.cloudfront-tenant-operator.io/v1alpha1
+apiVersion: cloudfront-tenant-operator.io/v1alpha1
 kind: DistributionTenant
 metadata:
   labels:

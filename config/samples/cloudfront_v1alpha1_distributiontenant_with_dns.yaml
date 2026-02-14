@@ -4,7 +4,7 @@
 #
 # NOTE: The dns feature is a Phase 4 capability. The operator will currently
 # ignore the dns field. This sample serves as a design reference.
-apiVersion: cloudfront.cloudfront-tenant-operator.io/v1alpha1
+apiVersion: cloudfront-tenant-operator.io/v1alpha1
 kind: DistributionTenant
 metadata:
   labels:

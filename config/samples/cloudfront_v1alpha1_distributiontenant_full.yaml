@@ -1,6 +1,6 @@
 # Full DistributionTenant example with all optional fields.
 # Replace distributionId, connectionGroupId, and ARNs with real values.
-apiVersion: cloudfront.cloudfront-tenant-operator.io/v1alpha1
+apiVersion: cloudfront-tenant-operator.io/v1alpha1
 kind: DistributionTenant
 metadata:
   labels:

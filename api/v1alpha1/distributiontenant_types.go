@@ -296,7 +296,7 @@ const (
 )
 
 // FinalizerName is the finalizer used by this operator.
-const FinalizerName = "cloudfront.cloudfront-tenant-operator.io/finalizer"
+const FinalizerName = "cloudfront-tenant-operator.io/finalizer"
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status

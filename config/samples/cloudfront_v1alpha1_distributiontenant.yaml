@@ -1,6 +1,6 @@
 # Minimal DistributionTenant example
 # Replace distributionId with your multi-tenant distribution ID.
-apiVersion: cloudfront.cloudfront-tenant-operator.io/v1alpha1
+apiVersion: cloudfront-tenant-operator.io/v1alpha1
 kind: DistributionTenant
 metadata:
   labels:
