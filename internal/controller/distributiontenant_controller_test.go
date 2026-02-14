@@ -42,9 +42,9 @@ var _ = Describe("DistributionTenant Controller", func() {
 	)
 
 	var (
-		ctx        context.Context
-		mockClient *cfaws.MockCloudFrontClient
-		reconciler *DistributionTenantReconciler
+		ctx            context.Context
+		mockClient     *cfaws.MockCloudFrontClient
+		reconciler     *DistributionTenantReconciler
 		namespacedName types.NamespacedName
 	)
 

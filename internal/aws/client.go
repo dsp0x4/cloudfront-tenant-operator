@@ -45,27 +45,27 @@ type CloudFrontClient interface {
 
 // CreateDistributionTenantInput represents the input for creating a distribution tenant.
 type CreateDistributionTenantInput struct {
-	DistributionId          string
-	Name                    string
-	Domains                 []DomainInput
-	Enabled                 *bool
-	ConnectionGroupId       *string
-	Parameters              []ParameterInput
-	Customizations          *CustomizationsInput
+	DistributionId            string
+	Name                      string
+	Domains                   []DomainInput
+	Enabled                   *bool
+	ConnectionGroupId         *string
+	Parameters                []ParameterInput
+	Customizations            *CustomizationsInput
 	ManagedCertificateRequest *ManagedCertificateRequestInput
-	Tags                    []TagInput
+	Tags                      []TagInput
 }
 
 // UpdateDistributionTenantInput represents the input for updating a distribution tenant.
 type UpdateDistributionTenantInput struct {
-	ID                      string
-	DistributionId          string
-	IfMatch                 string
-	Domains                 []DomainInput
-	Enabled                 *bool
-	ConnectionGroupId       *string
-	Parameters              []ParameterInput
-	Customizations          *CustomizationsInput
+	ID                        string
+	DistributionId            string
+	IfMatch                   string
+	Domains                   []DomainInput
+	Enabled                   *bool
+	ConnectionGroupId         *string
+	Parameters                []ParameterInput
+	Customizations            *CustomizationsInput
 	ManagedCertificateRequest *ManagedCertificateRequestInput
 }
 
@@ -119,19 +119,19 @@ type TagInput struct {
 
 // DistributionTenantOutput represents the response from AWS for a distribution tenant.
 type DistributionTenantOutput struct {
-	ID               string
-	Arn              string
-	DistributionId   string
-	Name             string
-	ETag             string
-	Status           string
-	Enabled          bool
+	ID                string
+	Arn               string
+	DistributionId    string
+	Name              string
+	ETag              string
+	Status            string
+	Enabled           bool
 	ConnectionGroupId string
-	CreatedTime      *time.Time
-	LastModifiedTime *time.Time
-	Domains          []DomainResultOutput
-	Parameters       []ParameterInput
-	Customizations   *CustomizationsInput
+	CreatedTime       *time.Time
+	LastModifiedTime  *time.Time
+	Domains           []DomainResultOutput
+	Parameters        []ParameterInput
+	Customizations    *CustomizationsInput
 }
 
 // DomainResultOutput represents the status of a domain as returned by AWS.

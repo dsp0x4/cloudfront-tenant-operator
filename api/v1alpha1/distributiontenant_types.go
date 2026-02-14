@@ -278,21 +278,21 @@ const (
 
 // Condition reason constants.
 const (
-	ReasonDeployed       = "Deployed"
-	ReasonDeploying      = "Deploying"
-	ReasonCreating       = "Creating"
-	ReasonDeleting       = "Deleting"
-	ReasonDisabling      = "Disabling"
-	ReasonInSync         = "InSync"
-	ReasonDriftDetected  = "DriftDetected"
-	ReasonUpdatePending  = "UpdatePending"
-	ReasonDomainConflict     = "DomainConflict"
-	ReasonAccessDenied       = "AccessDenied"
-	ReasonInvalidSpec        = "InvalidSpec"
-	ReasonAWSError           = "AWSError"
-	ReasonCertValidated      = "Validated"
-	ReasonCertPending        = "PendingValidation"
-	ReasonCertNotConfigured  = "NotConfigured"
+	ReasonDeployed          = "Deployed"
+	ReasonDeploying         = "Deploying"
+	ReasonCreating          = "Creating"
+	ReasonDeleting          = "Deleting"
+	ReasonDisabling         = "Disabling"
+	ReasonInSync            = "InSync"
+	ReasonDriftDetected     = "DriftDetected"
+	ReasonUpdatePending     = "UpdatePending"
+	ReasonDomainConflict    = "DomainConflict"
+	ReasonAccessDenied      = "AccessDenied"
+	ReasonInvalidSpec       = "InvalidSpec"
+	ReasonAWSError          = "AWSError"
+	ReasonCertValidated     = "Validated"
+	ReasonCertPending       = "PendingValidation"
+	ReasonCertNotConfigured = "NotConfigured"
 )
 
 // FinalizerName is the finalizer used by this operator.
