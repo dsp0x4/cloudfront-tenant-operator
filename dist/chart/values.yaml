@@ -1,0 +1,60 @@
+# Default values for cloudfront-tenant-operator.
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/cloudfront-tenant-operator/cloudfront-tenant-operator
+  tag: ""  # Defaults to appVersion
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# AWS configuration
+aws:
+  # AWS region for CloudFront API calls.
+  # If empty, uses SDK default resolution (env vars, config file, IMDS).
+  region: ""
+
+# Leader election ensures only one controller instance is active.
+leaderElection:
+  enabled: true
+
+# Metrics configuration
+metrics:
+  # Bind address for the metrics endpoint. Set to "0" to disable.
+  bindAddress: ":8443"
+  # Serve metrics over HTTPS
+  secure: true
+
+# Health probes
+probes:
+  # Bind address for health and readiness probes
+  bindAddress: ":8081"
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account (e.g., for IRSA)
+  annotations: {}
+  # The name of the service account to use.
+  # If not set, a name is generated using the fullname template.
+  name: ""
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 128Mi
+  requests:
+    cpu: 10m
+    memory: 64Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Additional environment variables for the manager container
+extraEnv: []
+# - name: AWS_ROLE_ARN
+#   value: "arn:aws:iam::123456789012:role/cloudfront-tenant-operator"

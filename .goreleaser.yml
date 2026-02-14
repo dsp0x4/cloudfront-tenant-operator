@@ -1,0 +1,79 @@
+version: 2
+
+project_name: cloudfront-tenant-operator
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: manager
+    main: ./cmd/main.go
+    binary: manager
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+
+dockers:
+  - image_templates:
+      - "ghcr.io/cloudfront-tenant-operator/cloudfront-tenant-operator:{{ .Version }}-amd64"
+    dockerfile: Dockerfile
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.source={{ .GitURL }}"
+    goarch: amd64
+
+  - image_templates:
+      - "ghcr.io/cloudfront-tenant-operator/cloudfront-tenant-operator:{{ .Version }}-arm64"
+    dockerfile: Dockerfile
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.source={{ .GitURL }}"
+    goarch: arm64
+
+docker_manifests:
+  - name_template: "ghcr.io/cloudfront-tenant-operator/cloudfront-tenant-operator:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/cloudfront-tenant-operator/cloudfront-tenant-operator:{{ .Version }}-amd64"
+      - "ghcr.io/cloudfront-tenant-operator/cloudfront-tenant-operator:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/cloudfront-tenant-operator/cloudfront-tenant-operator:latest"
+    image_templates:
+      - "ghcr.io/cloudfront-tenant-operator/cloudfront-tenant-operator:{{ .Version }}-amd64"
+      - "ghcr.io/cloudfront-tenant-operator/cloudfront-tenant-operator:{{ .Version }}-arm64"
+
+archives:
+  - format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+
+release:
+  github:
+    owner: cloudfront-tenant-operator
+    name: cloudfront-tenant-operator
+  prerelease: auto

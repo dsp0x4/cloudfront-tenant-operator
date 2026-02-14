@@ -1,0 +1,25 @@
+# DistributionTenant with CloudFront-managed certificate.
+# CloudFront will request and manage an ACM certificate automatically.
+# DNS CNAME records must point to the CloudFront distribution before the
+# certificate can be validated.
+apiVersion: cloudfront.cloudfront-tenant-operator.io/v1alpha1
+kind: DistributionTenant
+metadata:
+  labels:
+    app.kubernetes.io/name: cloudfront-tenant-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: my-tenant-managed-cert
+spec:
+  distributionId: "E1XNX8R2GOAABC"
+  name: "my-tenant-managed-cert"
+  domains:
+    - domain: "managed-cert.example.com"
+
+  managedCertificateRequest:
+    validationTokenHost: "cloudfront"
+    primaryDomainName: "managed-cert.example.com"
+    certificateTransparencyLoggingPreference: "enabled"
+
+  tags:
+    - key: "env"
+      value: "staging"

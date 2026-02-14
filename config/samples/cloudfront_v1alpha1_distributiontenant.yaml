@@ -1,0 +1,14 @@
+# Minimal DistributionTenant example
+# Replace distributionId with your multi-tenant distribution ID.
+apiVersion: cloudfront.cloudfront-tenant-operator.io/v1alpha1
+kind: DistributionTenant
+metadata:
+  labels:
+    app.kubernetes.io/name: cloudfront-tenant-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: my-tenant-minimal
+spec:
+  distributionId: "E1XNX8R2GOAABC"
+  name: "my-tenant-minimal"
+  domains:
+    - domain: "minimal.example.com"

@@ -1,0 +1,387 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.0
+  name: distributiontenants.cloudfront.cloudfront-tenant-operator.io
+spec:
+  group: cloudfront.cloudfront-tenant-operator.io
+  names:
+    kind: DistributionTenant
+    listKind: DistributionTenantList
+    plural: distributiontenants
+    singular: distributiontenant
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.distributionTenantStatus
+      name: Status
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Synced")].status
+      name: Synced
+      type: string
+    - jsonPath: .status.id
+      name: ID
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          DistributionTenant is the Schema for the distributiontenants API.
+          It represents a CloudFront Distribution Tenant managed by the operator.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of the DistributionTenant.
+            properties:
+              connectionGroupId:
+                description: |-
+                  connectionGroupId is the ID of the connection group to associate with
+                  the distribution tenant. If not specified, CloudFront uses the default
+                  connection group.
+                type: string
+              customizations:
+                description: |-
+                  customizations allows overriding specific settings from the parent
+                  multi-tenant distribution, including geo restrictions, WAF web ACL, and
+                  ACM certificate.
+                properties:
+                  certificate:
+                    description: certificate configures an ACM certificate override
+                      for this tenant.
+                    properties:
+                      arn:
+                        description: arn is the ARN of the ACM certificate to use
+                          for this tenant.
+                        type: string
+                    required:
+                    - arn
+                    type: object
+                  geoRestrictions:
+                    description: geoRestrictions configures geographic restrictions
+                      for this tenant.
+                    properties:
+                      locations:
+                        description: locations is the list of ISO 3166-1 alpha-2 country
+                          codes.
+                        items:
+                          type: string
+                        type: array
+                      restrictionType:
+                        description: restrictionType is the method for restricting
+                          content distribution by country.
+                        enum:
+                        - none
+                        - whitelist
+                        - blacklist
+                        type: string
+                    required:
+                    - restrictionType
+                    type: object
+                  webAcl:
+                    description: webAcl configures the WAF web ACL for this tenant.
+                    properties:
+                      action:
+                        description: |-
+                          action specifies what to do with the WAF web ACL.
+                          "override" uses a separate WAF web ACL for this tenant.
+                          "disable" removes WAF protection entirely.
+                        enum:
+                        - disable
+                        - override
+                        type: string
+                      arn:
+                        description: arn is the ARN of the WAF web ACL. Required when
+                          action is "override".
+                        type: string
+                    required:
+                    - action
+                    type: object
+                    x-kubernetes-validations:
+                    - message: arn is required when action is 'override'
+                      rule: self.action != 'override' || has(self.arn)
+                type: object
+              distributionId:
+                description: distributionId is the ID of the multi-tenant distribution
+                  to use.
+                minLength: 1
+                type: string
+              dns:
+                description: |-
+                  dns configures automatic DNS record management for the tenant's domains.
+                  When configured, the operator will create/update/delete CNAME records
+                  pointing to the CloudFront distribution endpoint.
+                  This is a Phase 4 feature -- the operator will ignore this field until
+                  the DNS controller is implemented.
+                properties:
+                  hostedZoneId:
+                    description: |-
+                      hostedZoneId is the Route53 hosted zone ID where records will be managed.
+                      Required when provider is "route53".
+                    type: string
+                  provider:
+                    description: provider is the DNS provider to use for record management.
+                    enum:
+                    - route53
+                    type: string
+                required:
+                - provider
+                type: object
+              domains:
+                description: |-
+                  domains is the list of domains associated with the distribution tenant.
+                  At least one domain is required.
+                items:
+                  description: DomainSpec represents a domain to associate with the
+                    distribution tenant.
+                  properties:
+                    domain:
+                      description: domain is the fully qualified domain name.
+                      minLength: 1
+                      type: string
+                  required:
+                  - domain
+                  type: object
+                minItems: 1
+                type: array
+              enabled:
+                default: true
+                description: |-
+                  enabled indicates whether the distribution tenant should serve traffic.
+                  Defaults to true.
+                type: boolean
+              managedCertificateRequest:
+                description: managedCertificateRequest configures a CloudFront-managed
+                  ACM certificate.
+                properties:
+                  certificateTransparencyLoggingPreference:
+                    description: certificateTransparencyLoggingPreference controls
+                      CT logging.
+                    enum:
+                    - enabled
+                    - disabled
+                    type: string
+                  primaryDomainName:
+                    description: primaryDomainName is the primary domain for the managed
+                      certificate.
+                    type: string
+                  validationTokenHost:
+                    description: |-
+                      validationTokenHost specifies how the HTTP validation token is served.
+                      "cloudfront" means CloudFront serves the token automatically (requires
+                      DNS CNAME to be pointing to CloudFront before the request).
+                      "self-hosted" means you serve the validation token from your own infrastructure.
+                    enum:
+                    - cloudfront
+                    - self-hosted
+                    type: string
+                required:
+                - validationTokenHost
+                type: object
+              name:
+                description: |-
+                  name is a friendly identifier for the distribution tenant, unique within your AWS account.
+                  This field is immutable after creation.
+                maxLength: 128
+                minLength: 3
+                pattern: ^[a-zA-Z0-9][a-zA-Z0-9\.\-]{1,126}[a-zA-Z0-9]$
+                type: string
+              parameters:
+                description: |-
+                  parameters is a list of key-value parameter values to add to the resource.
+                  A valid parameter value must exist for any parameter that is marked as
+                  required in the multi-tenant distribution.
+                items:
+                  description: Parameter is a key-value pair passed to the multi-tenant
+                    distribution template.
+                  properties:
+                    name:
+                      description: name is the parameter name.
+                      maxLength: 128
+                      minLength: 1
+                      pattern: ^[a-zA-Z0-9\-_]+$
+                      type: string
+                    value:
+                      description: value is the parameter value.
+                      maxLength: 256
+                      minLength: 1
+                      type: string
+                  required:
+                  - name
+                  - value
+                  type: object
+                type: array
+              tags:
+                description: tags is a list of key-value tags to associate with the
+                  distribution tenant.
+                items:
+                  description: Tag is a key-value pair for resource tagging.
+                  properties:
+                    key:
+                      description: key is the tag key.
+                      maxLength: 128
+                      minLength: 1
+                      type: string
+                    value:
+                      description: value is the tag value.
+                      maxLength: 256
+                      type: string
+                  required:
+                  - key
+                  type: object
+                type: array
+            required:
+            - distributionId
+            - domains
+            - name
+            type: object
+          status:
+            description: status defines the observed state of the DistributionTenant.
+            properties:
+              arn:
+                description: arn is the Amazon Resource Name of the distribution tenant.
+                type: string
+              conditions:
+                description: |-
+                  conditions represent the latest available observations of the
+                  DistributionTenant's state.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              createdTime:
+                description: createdTime is the timestamp when the distribution tenant
+                  was created in AWS.
+                format: date-time
+                type: string
+              distributionTenantStatus:
+                description: |-
+                  distributionTenantStatus is the AWS-reported deployment status
+                  (e.g., "InProgress", "Deployed").
+                type: string
+              domainResults:
+                description: domainResults reflects the status of each domain as reported
+                  by AWS.
+                items:
+                  description: DomainResult represents the status of a domain in AWS.
+                  properties:
+                    domain:
+                      description: domain is the fully qualified domain name.
+                      type: string
+                    status:
+                      description: status is the AWS-reported domain status ("active"
+                        or "inactive").
+                      type: string
+                  required:
+                  - domain
+                  type: object
+                type: array
+              driftDetected:
+                description: |-
+                  driftDetected indicates whether the AWS state differs from the spec
+                  due to an external change.
+                type: boolean
+              eTag:
+                description: |-
+                  eTag is the current version identifier used for optimistic concurrency
+                  control on updates and deletes.
+                type: string
+              id:
+                description: id is the AWS-assigned ID of the distribution tenant.
+                type: string
+              lastDriftCheckTime:
+                description: lastDriftCheckTime is the timestamp of the last drift
+                  detection check.
+                format: date-time
+                type: string
+              lastModifiedTime:
+                description: |-
+                  lastModifiedTime is the timestamp when the distribution tenant was last
+                  modified in AWS.
+                format: date-time
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

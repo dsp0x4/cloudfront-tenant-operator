@@ -1,0 +1,26 @@
+# TenantSource example: discover tenants from a PostgreSQL database.
+# The operator will periodically query the database and create/update
+# DistributionTenant CRs for each row returned.
+#
+# NOTE: This is a Phase 4 feature. The TenantSource controller is not yet
+# implemented. This sample serves as a design reference.
+apiVersion: cloudfront.cloudfront-tenant-operator.io/v1alpha1
+kind: TenantSource
+metadata:
+  labels:
+    app.kubernetes.io/name: cloudfront-tenant-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: postgres-tenants
+spec:
+  provider: postgres
+  distributionId: "E1XNX8R2GOAABC"
+  pollInterval: "5m"
+  dryRun: true  # Start in dry-run to preview changes before applying
+
+  postgres:
+    connectionSecretRef:
+      name: tenant-db-credentials
+    query: |
+      SELECT name, domain, enabled
+      FROM tenants
+      WHERE active = true

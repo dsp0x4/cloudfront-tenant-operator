@@ -1,0 +1,6 @@
+## Append samples of your project ##
+resources:
+- cloudfront_v1alpha1_distributiontenant.yaml
+# - cloudfront_v1alpha1_distributiontenant_full.yaml
+# - cloudfront_v1alpha1_distributiontenant_managed_cert.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

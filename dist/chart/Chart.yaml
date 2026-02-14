@@ -1,0 +1,19 @@
+apiVersion: v2
+name: cloudfront-tenant-operator
+description: A Kubernetes operator for managing CloudFront Distribution Tenants
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.28.0"
+keywords:
+  - cloudfront
+  - aws
+  - saas
+  - multi-tenant
+  - cdn
+  - operator
+home: https://github.com/paolo-desantis/cloudfront-tenant-operator
+sources:
+  - https://github.com/paolo-desantis/cloudfront-tenant-operator
+maintainers:
+  - name: cloudfront-tenant-operator
