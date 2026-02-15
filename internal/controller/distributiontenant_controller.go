@@ -356,6 +356,22 @@ func (r *DistributionTenantReconciler) reconcileUpdate(ctx context.Context, tena
 	log := logf.FromContext(ctx)
 	log.Info("Updating distribution tenant in AWS", "id", tenant.Status.ID)
 
+	// TDOO: move to function
+	// Handle managed certificate lifecycle
+	if meta.IsStatusConditionFalse(tenant.Status.Conditions, cloudfrontv1alpha1.ConditionTypeCertificateReady) && tenant.Status.ManagedCertificateStatus == "issued" {
+		certCondition := meta.FindStatusCondition(tenant.Status.Conditions, cloudfrontv1alpha1.ConditionTypeCertificateReady)
+		if certCondition != nil {
+			if certCondition.Reason == cloudfrontv1alpha1.ReasonCertValidated {
+				if tenant.Spec.Customizations == nil {
+					tenant.Spec.Customizations = &cloudfrontv1alpha1.Customizations{}
+				}
+				tenant.Spec.Customizations.Certificate = &cloudfrontv1alpha1.CertificateCustomization{
+					Arn: tenant.Status.CertificateArn,
+				}
+			}
+		}
+	}
+
 	input := buildUpdateInput(tenant, awsTenant.ETag)
 	out, err := r.CFClient.UpdateDistributionTenant(ctx, input)
 	if err != nil {
@@ -588,7 +604,7 @@ func updateCertificateCondition(tenant *cloudfrontv1alpha1.DistributionTenant, c
 					fmt.Sprintf("Managed certificate %s is validated and active", certDetails.CertificateArn))
 			} else {
 				setCondition(tenant, cloudfrontv1alpha1.ConditionTypeCertificateReady, metav1.ConditionFalse,
-					cloudfrontv1alpha1.ReasonCertPending,
+					cloudfrontv1alpha1.ReasonCertValidated,
 					fmt.Sprintf("Managed certificate %s is issued but not yet attached to all domains", certDetails.CertificateArn))
 			}
 		case "pending-validation":
