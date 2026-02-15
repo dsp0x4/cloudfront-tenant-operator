@@ -133,13 +133,11 @@ func specMatchesAWS(spec *cloudfrontv1alpha1.DistributionTenantSpec, aws *cfaws.
 		return false
 	}
 
-	// Connection group ID
-	specCGID := ""
+	// Connection group ID (only if explicitly defined in the spec)
 	if spec.ConnectionGroupId != nil {
-		specCGID = *spec.ConnectionGroupId
-	}
-	if specCGID != aws.ConnectionGroupId {
-		return false
+		if *spec.ConnectionGroupId != aws.ConnectionGroupId {
+			return false
+		}
 	}
 
 	// Domains (order-independent)
