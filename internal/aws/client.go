@@ -41,6 +41,17 @@ type CloudFrontClient interface {
 	// The tenant must be disabled (Enabled=false) and in Deployed status before deletion.
 	// The ifMatch parameter must contain the current ETag.
 	DeleteDistributionTenant(ctx context.Context, id string, ifMatch string) error
+
+	// GetDistributionInfo retrieves configuration details about the parent
+	// multi-tenant distribution, including its default certificate and
+	// parameter definitions. Used for spec validation before creating or
+	// updating a tenant.
+	GetDistributionInfo(ctx context.Context, distributionId string) (*DistributionInfo, error)
+
+	// GetManagedCertificateDetails retrieves the managed certificate details
+	// for a distribution tenant. Returns nil details (without error) if no
+	// managed certificate is configured for the tenant.
+	GetManagedCertificateDetails(ctx context.Context, tenantIdentifier string) (*ManagedCertificateDetailsOutput, error)
 }
 
 // CreateDistributionTenantInput represents the input for creating a distribution tenant.
@@ -138,4 +149,70 @@ type DistributionTenantOutput struct {
 type DomainResultOutput struct {
 	Domain string
 	Status string
+}
+
+// DistributionInfo contains configuration details about a multi-tenant
+// distribution, used for validating tenant specs before creation or update.
+type DistributionInfo struct {
+	// ID is the distribution identifier.
+	ID string
+
+	// DomainName is the CloudFront domain name (e.g. d111111abcdef8.cloudfront.net).
+	DomainName string
+
+	// ViewerCertificateArn is the ARN of the ACM certificate attached to the
+	// distribution. Empty if the distribution uses the CloudFront default certificate.
+	ViewerCertificateArn string
+
+	// UsesCloudFrontDefaultCert is true when the distribution uses the
+	// CloudFront default certificate (*.cloudfront.net) rather than a custom
+	// ACM certificate.
+	UsesCloudFrontDefaultCert bool
+
+	// ParameterDefinitions lists the template parameters defined on the
+	// multi-tenant distribution, including whether they are required and any
+	// default values.
+	ParameterDefinitions []ParameterDefinitionOutput
+}
+
+// ParameterDefinitionOutput represents a parameter definition from the
+// multi-tenant distribution template.
+type ParameterDefinitionOutput struct {
+	// Name is the parameter name.
+	Name string
+
+	// Required indicates whether the parameter must be supplied by each tenant.
+	Required bool
+
+	// DefaultValue is the default value for the parameter. Empty when Required
+	// is true and no default is configured.
+	DefaultValue string
+}
+
+// ManagedCertificateDetailsOutput contains the status of a CloudFront-managed
+// ACM certificate for a distribution tenant.
+type ManagedCertificateDetailsOutput struct {
+	// CertificateArn is the ARN of the managed ACM certificate. May be empty
+	// while the certificate is still being provisioned.
+	CertificateArn string
+
+	// CertificateStatus is the certificate lifecycle status:
+	// "pending-validation", "issued", "inactive", "expired",
+	// "validation-timed-out", "revoked", "failed".
+	CertificateStatus string
+
+	// ValidationTokenHost is how the validation token is served ("cloudfront"
+	// or "self-hosted").
+	ValidationTokenHost string
+
+	// ValidationTokenDetails contains per-domain validation token information
+	// (redirect URLs for HTTP validation).
+	ValidationTokenDetails []ValidationTokenDetailOutput
+}
+
+// ValidationTokenDetailOutput contains domain-level validation token information.
+type ValidationTokenDetailOutput struct {
+	Domain       string
+	RedirectFrom string
+	RedirectTo   string
 }

@@ -66,11 +66,17 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var awsRegion string
+	var driftPolicy string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&awsRegion, "aws-region", "", "AWS region for CloudFront API calls. "+
 		"If not set, uses AWS SDK default resolution (env vars, config file, IMDS).")
+	flag.StringVar(&driftPolicy, "drift-policy", "enforce",
+		"How to handle external drift on AWS resources. "+
+			"enforce: overwrite AWS with the K8s spec (default). "+
+			"report: log and set conditions but don't modify AWS. "+
+			"suspend: skip drift detection entirely.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
@@ -93,6 +99,12 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	if err := controller.ValidateDriftPolicy(driftPolicy); err != nil {
+		setupLog.Error(err, "invalid --drift-policy flag")
+		os.Exit(1)
+	}
+	setupLog.Info("Drift policy configured", "drift-policy", driftPolicy)
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -199,10 +211,11 @@ func main() {
 	cfClient := cfaws.NewRealCloudFrontClient(awsCfg)
 
 	if err := (&controller.DistributionTenantReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		CFClient: cfClient,
-		Recorder: mgr.GetEventRecorderFor("distributiontenant-controller"),
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		CFClient:    cfClient,
+		Recorder:    mgr.GetEventRecorderFor("distributiontenant-controller"),
+		DriftPolicy: controller.DriftPolicy(driftPolicy),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "DistributionTenant")
 		os.Exit(1)

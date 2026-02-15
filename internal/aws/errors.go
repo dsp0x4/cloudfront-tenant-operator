@@ -18,6 +18,7 @@ package aws
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/aws/smithy-go"
@@ -81,6 +82,9 @@ func IsThrottling(err error) bool {
 }
 
 // classifyAWSError maps AWS SDK API errors to our domain error types.
+// The original AWS error message is preserved by wrapping the sentinel error,
+// so callers can use errors.Is() for classification while users see the
+// specific details from the AWS API response.
 func classifyAWSError(err error) error {
 	if err == nil {
 		return nil
@@ -89,21 +93,22 @@ func classifyAWSError(err error) error {
 	var apiErr smithy.APIError
 	if errors.As(err, &apiErr) {
 		code := apiErr.ErrorCode()
+		msg := apiErr.ErrorMessage()
 		switch {
 		case code == "CNAMEAlreadyExists" || strings.Contains(code, "CNAMEAlreadyExists"):
-			return ErrDomainConflict
+			return fmt.Errorf("%w: %s", ErrDomainConflict, msg)
 		case code == "AccessDenied":
-			return ErrAccessDenied
+			return fmt.Errorf("%w: %s", ErrAccessDenied, msg)
 		case code == "InvalidArgument":
-			return ErrInvalidArgument
+			return fmt.Errorf("%w: %s", ErrInvalidArgument, msg)
 		case code == "EntityNotFound" || code == "NoSuchDistributionTenant":
-			return ErrNotFound
+			return fmt.Errorf("%w: %s", ErrNotFound, msg)
 		case code == "ResourceNotDisabled":
-			return ErrResourceNotDisabled
+			return fmt.Errorf("%w: %s", ErrResourceNotDisabled, msg)
 		case code == "PreconditionFailed" || code == "InvalidIfMatchVersion":
-			return ErrPreconditionFailed
+			return fmt.Errorf("%w: %s", ErrPreconditionFailed, msg)
 		case code == "Throttling" || code == "TooManyRequests":
-			return ErrThrottling
+			return fmt.Errorf("%w: %s", ErrThrottling, msg)
 		}
 	}
 

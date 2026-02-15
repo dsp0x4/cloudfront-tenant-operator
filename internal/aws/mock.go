@@ -38,6 +38,10 @@ type MockCloudFrontClient struct {
 	UpdateError error
 	// DeleteError, if set, is returned by DeleteDistributionTenant.
 	DeleteError error
+	// GetDistributionInfoError, if set, is returned by GetDistributionInfo.
+	GetDistributionInfoError error
+	// GetManagedCertError, if set, is returned by GetManagedCertificateDetails.
+	GetManagedCertError error
 
 	// CreateCallCount tracks the number of calls to CreateDistributionTenant.
 	CreateCallCount int
@@ -47,12 +51,24 @@ type MockCloudFrontClient struct {
 	UpdateCallCount int
 	// DeleteCallCount tracks the number of calls to DeleteDistributionTenant.
 	DeleteCallCount int
+	// GetDistributionInfoCallCount tracks calls to GetDistributionInfo.
+	GetDistributionInfoCallCount int
+	// GetManagedCertCallCount tracks calls to GetManagedCertificateDetails.
+	GetManagedCertCallCount int
+
+	// DistributionInfos stores mock distribution info keyed by distribution ID.
+	DistributionInfos map[string]*DistributionInfo
+
+	// ManagedCertDetails stores mock managed cert details keyed by tenant ID.
+	ManagedCertDetails map[string]*ManagedCertificateDetailsOutput
 }
 
 // NewMockCloudFrontClient creates a new MockCloudFrontClient.
 func NewMockCloudFrontClient() *MockCloudFrontClient {
 	return &MockCloudFrontClient{
-		tenants: make(map[string]*DistributionTenantOutput),
+		tenants:            make(map[string]*DistributionTenantOutput),
+		DistributionInfos:  make(map[string]*DistributionInfo),
+		ManagedCertDetails: make(map[string]*ManagedCertificateDetailsOutput),
 	}
 }
 
@@ -195,6 +211,38 @@ func (m *MockCloudFrontClient) DeleteDistributionTenant(_ context.Context, id st
 
 	delete(m.tenants, id)
 	return nil
+}
+
+// GetDistributionInfo returns mock distribution info.
+func (m *MockCloudFrontClient) GetDistributionInfo(_ context.Context, distributionId string) (*DistributionInfo, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.GetDistributionInfoCallCount++
+
+	if m.GetDistributionInfoError != nil {
+		return nil, m.GetDistributionInfoError
+	}
+
+	info, ok := m.DistributionInfos[distributionId]
+	if !ok {
+		return nil, ErrNotFound
+	}
+
+	return info, nil
+}
+
+// GetManagedCertificateDetails returns mock managed certificate details.
+func (m *MockCloudFrontClient) GetManagedCertificateDetails(_ context.Context, tenantIdentifier string) (*ManagedCertificateDetailsOutput, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.GetManagedCertCallCount++
+
+	if m.GetManagedCertError != nil {
+		return nil, m.GetManagedCertError
+	}
+
+	details := m.ManagedCertDetails[tenantIdentifier]
+	return details, nil
 }
 
 // SetTenantStatus allows tests to set the status of a mock tenant

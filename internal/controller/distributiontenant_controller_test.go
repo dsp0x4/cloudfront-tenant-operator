@@ -52,13 +52,24 @@ var _ = Describe("DistributionTenant Controller", func() {
 		ctx = context.Background()
 		mockClient = cfaws.NewMockCloudFrontClient()
 		reconciler = &DistributionTenantReconciler{
-			Client:   k8sClient,
-			Scheme:   k8sClient.Scheme(),
-			CFClient: mockClient,
+			Client:      k8sClient,
+			Scheme:      k8sClient.Scheme(),
+			CFClient:    mockClient,
+			DriftPolicy: DriftPolicyEnforce,
 		}
 		namespacedName = types.NamespacedName{
 			Name:      tenantName,
 			Namespace: tenantNamespace,
+		}
+
+		// Set up default distribution info that passes validation.
+		// The distribution has a custom ACM cert, so tenants don't need
+		// their own cert by default.
+		mockClient.DistributionInfos[distributionId] = &cfaws.DistributionInfo{
+			ID:                        distributionId,
+			DomainName:                "d111111abcdef8.cloudfront.net",
+			ViewerCertificateArn:      "arn:aws:acm:us-east-1:123456789012:certificate/wildcard-cert",
+			UsesCloudFrontDefaultCert: false,
 		}
 	})
 
@@ -82,13 +93,13 @@ var _ = Describe("DistributionTenant Controller", func() {
 			// First reconcile: adds finalizer
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.Requeue).To(BeTrue())
+			Expect(result.RequeueAfter).To(Equal(1 * time.Second))
 
 			// Verify finalizer was added
 			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
 			Expect(tenant.Finalizers).To(ContainElement(cloudfrontv1alpha1.FinalizerName))
 
-			// Second reconcile: creates in AWS
+			// Second reconcile: validates spec + creates in AWS
 			result, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(Equal(requeueShort))
@@ -102,6 +113,8 @@ var _ = Describe("DistributionTenant Controller", func() {
 
 			// Verify AWS was called
 			Expect(mockClient.CreateCallCount).To(Equal(1))
+			// Verify distribution info was fetched for validation
+			Expect(mockClient.GetDistributionInfoCallCount).To(Equal(1))
 		})
 
 		It("should handle terminal errors (CNAMEAlreadyExists) without retrying", func() {
@@ -160,7 +173,7 @@ var _ = Describe("DistributionTenant Controller", func() {
 			Expect(readyCond.Reason).To(Equal(cloudfrontv1alpha1.ReasonDeployed))
 		})
 
-		It("should update AWS when spec changes", func() {
+		It("should update AWS when spec changes (three-way diff: spec changed)", func() {
 			// Create tenant
 			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
 			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
@@ -176,16 +189,150 @@ var _ = Describe("DistributionTenant Controller", func() {
 			// Reconcile to get steady state
 			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
 
-			// Change the spec: add a new domain
+			// Verify observedGeneration was set
 			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+			Expect(tenant.Status.ObservedGeneration).To(Equal(tenant.Generation))
+
+			// Change the spec: add a new domain (this bumps metadata.generation)
 			tenant.Spec.Domains = append(tenant.Spec.Domains, cloudfrontv1alpha1.DomainSpec{Domain: "new.example.com"})
 			Expect(k8sClient.Update(ctx, tenant)).To(Succeed())
 
-			// Reconcile: should detect change and update
+			// Verify generation was bumped
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+			Expect(tenant.Generation).To(BeNumerically(">", tenant.Status.ObservedGeneration))
+
+			// Reconcile: three-way diff detects spec change, pushes update
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(Equal(requeueShort))
 			Expect(mockClient.UpdateCallCount).To(BeNumerically(">", 0))
+
+			// Verify observedGeneration updated after successful update
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+			Expect(tenant.Status.ObservedGeneration).To(Equal(tenant.Generation))
+		})
+
+		It("should enforce spec when drift is detected (drift-policy=enforce)", func() {
+			// Default policy is enforce (set in BeforeEach)
+			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
+			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
+			// Add finalizer + create
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+			awsID := tenant.Status.ID
+			mockClient.SetTenantStatus(awsID, "Deployed")
+
+			// Reconcile to reach steady state
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+			Expect(tenant.Status.ObservedGeneration).To(Equal(tenant.Generation))
+			updateCountBefore := mockClient.UpdateCallCount
+
+			// Simulate external drift
+			awsTenant := mockClient.GetTenant(awsID)
+			awsTenant.Domains = append(awsTenant.Domains, cfaws.DomainResultOutput{
+				Domain: "rogue.example.com", Status: "active",
+			})
+
+			// Reconcile: should detect drift and push spec to AWS
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueShort)) // update requeues short
+
+			// Verify an update was pushed (drift corrected)
+			Expect(mockClient.UpdateCallCount).To(Equal(updateCountBefore + 1))
+		})
+
+		It("should only report drift without modifying AWS (drift-policy=report)", func() {
+			reconciler.DriftPolicy = DriftPolicyReport
+
+			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
+			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
+			// Add finalizer + create
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+			awsID := tenant.Status.ID
+			mockClient.SetTenantStatus(awsID, "Deployed")
+
+			// Reconcile to reach steady state
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+			Expect(tenant.Status.ObservedGeneration).To(Equal(tenant.Generation))
+			updateCountBefore := mockClient.UpdateCallCount
+
+			// Simulate external drift
+			awsTenant := mockClient.GetTenant(awsID)
+			awsTenant.Domains = append(awsTenant.Domains, cfaws.DomainResultOutput{
+				Domain: "rogue.example.com", Status: "active",
+			})
+
+			// Reconcile: should report drift but NOT push update
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueLong))
+
+			// No update was pushed
+			Expect(mockClient.UpdateCallCount).To(Equal(updateCountBefore))
+
+			// Drift condition was set
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+			Expect(tenant.Status.DriftDetected).To(BeTrue())
+			syncedCond := meta.FindStatusCondition(tenant.Status.Conditions, cloudfrontv1alpha1.ConditionTypeSynced)
+			Expect(syncedCond).NotTo(BeNil())
+			Expect(syncedCond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(syncedCond.Reason).To(Equal(cloudfrontv1alpha1.ReasonDriftDetected))
+			Expect(syncedCond.Message).To(ContainSubstring("outside the operator"))
+		})
+
+		It("should ignore drift when suspended (drift-policy=suspend)", func() {
+			reconciler.DriftPolicy = DriftPolicySuspend
+
+			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
+			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
+			// Add finalizer + create
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+			awsID := tenant.Status.ID
+			mockClient.SetTenantStatus(awsID, "Deployed")
+
+			// Reconcile to reach steady state
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+			updateCountBefore := mockClient.UpdateCallCount
+
+			// Simulate external drift
+			awsTenant := mockClient.GetTenant(awsID)
+			awsTenant.Domains = append(awsTenant.Domains, cfaws.DomainResultOutput{
+				Domain: "rogue.example.com", Status: "active",
+			})
+
+			// Reconcile: should acknowledge drift without reporting or updating
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueLong))
+
+			// No update was pushed
+			Expect(mockClient.UpdateCallCount).To(Equal(updateCountBefore))
+
+			// DriftDetected is set but Synced condition is NOT degraded
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+			Expect(tenant.Status.DriftDetected).To(BeTrue())
+			syncedCond := meta.FindStatusCondition(tenant.Status.Conditions, cloudfrontv1alpha1.ConditionTypeSynced)
+			// Synced condition should still be True (from the steady-state reconcile before drift)
+			Expect(syncedCond).NotTo(BeNil())
+			Expect(syncedCond.Status).To(Equal(metav1.ConditionTrue))
 		})
 	})
 
@@ -277,10 +424,10 @@ var _ = Describe("DistributionTenant Controller", func() {
 			// Set up precondition failed
 			mockClient.UpdateError = cfaws.ErrPreconditionFailed
 
-			// Reconcile: should requeue immediately
+			// Reconcile: should requeue via rate limiter (deprecated Requeue, see controller comment)
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.Requeue).To(BeTrue())
+			Expect(result.Requeue).To(BeTrue()) //nolint:staticcheck // intentional use, see reconcileUpdate
 		})
 
 		It("should handle throttling with longer backoff", func() {
@@ -299,9 +446,303 @@ var _ = Describe("DistributionTenant Controller", func() {
 			Expect(result.RequeueAfter).To(Equal(requeueShort * 2))
 		})
 	})
+
+	Context("Spec validation", func() {
+		It("should reject creation when distribution uses default cert and tenant has no cert", func() {
+			// Configure distribution to use CloudFront default certificate
+			mockClient.DistributionInfos[distributionId] = &cfaws.DistributionInfo{
+				ID:                        distributionId,
+				DomainName:                "d111111abcdef8.cloudfront.net",
+				UsesCloudFrontDefaultCert: true,
+			}
+
+			// Create tenant WITHOUT any certificate customization or managed cert
+			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
+			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
+			// Add finalizer
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+
+			// Attempt create: should fail validation
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueLong))
+
+			// Verify validation failure condition
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+			readyCond := meta.FindStatusCondition(tenant.Status.Conditions, cloudfrontv1alpha1.ConditionTypeReady)
+			Expect(readyCond).NotTo(BeNil())
+			Expect(readyCond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(readyCond.Reason).To(Equal(cloudfrontv1alpha1.ReasonValidationFailed))
+			Expect(readyCond.Message).To(ContainSubstring("customizations.certificate.arn"))
+			Expect(readyCond.Message).To(ContainSubstring("managedCertificateRequest"))
+
+			// Verify AWS create was NOT called
+			Expect(mockClient.CreateCallCount).To(Equal(0))
+		})
+
+		It("should allow creation when distribution uses default cert but tenant has managed cert", func() {
+			// Distribution uses CloudFront default cert
+			mockClient.DistributionInfos[distributionId] = &cfaws.DistributionInfo{
+				ID:                        distributionId,
+				DomainName:                "d111111abcdef8.cloudfront.net",
+				UsesCloudFrontDefaultCert: true,
+			}
+
+			// Tenant provides a managed certificate request
+			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
+			tenant.Spec.ManagedCertificateRequest = &cloudfrontv1alpha1.ManagedCertificateRequest{
+				ValidationTokenHost: "self-hosted",
+			}
+			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
+			// Add finalizer
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+
+			// Create: validation should pass
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueShort))
+
+			// Verify creation succeeded
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+			Expect(tenant.Status.ID).NotTo(BeEmpty())
+			Expect(mockClient.CreateCallCount).To(Equal(1))
+		})
+
+		It("should allow creation when distribution uses default cert but tenant has custom cert", func() {
+			mockClient.DistributionInfos[distributionId] = &cfaws.DistributionInfo{
+				ID:                        distributionId,
+				DomainName:                "d111111abcdef8.cloudfront.net",
+				UsesCloudFrontDefaultCert: true,
+			}
+
+			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
+			tenant.Spec.Customizations = &cloudfrontv1alpha1.Customizations{
+				Certificate: &cloudfrontv1alpha1.CertificateCustomization{
+					Arn: "arn:aws:acm:us-east-1:123456789012:certificate/custom-cert",
+				},
+			}
+			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
+			// Add finalizer
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+
+			// Create: validation should pass
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueShort))
+			Expect(mockClient.CreateCallCount).To(Equal(1))
+		})
+
+		It("should reject creation when required parameters are missing", func() {
+			// Distribution requires "origin-domain" parameter with no default
+			mockClient.DistributionInfos[distributionId] = &cfaws.DistributionInfo{
+				ID:                   distributionId,
+				DomainName:           "d111111abcdef8.cloudfront.net",
+				ViewerCertificateArn: "arn:aws:acm:us-east-1:123456789012:certificate/wildcard",
+				ParameterDefinitions: []cfaws.ParameterDefinitionOutput{
+					{Name: "origin-domain", Required: true, DefaultValue: ""},
+					{Name: "cache-ttl", Required: true, DefaultValue: "300"}, // has default
+					{Name: "log-bucket", Required: false, DefaultValue: ""},  // optional
+				},
+			}
+
+			// Create tenant without the required "origin-domain" parameter
+			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
+			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
+			// Add finalizer
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+
+			// Attempt create: should fail validation
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueLong))
+
+			// Verify validation failure
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+			readyCond := meta.FindStatusCondition(tenant.Status.Conditions, cloudfrontv1alpha1.ConditionTypeReady)
+			Expect(readyCond).NotTo(BeNil())
+			Expect(readyCond.Reason).To(Equal(cloudfrontv1alpha1.ReasonValidationFailed))
+			Expect(readyCond.Message).To(ContainSubstring("origin-domain"))
+			// "cache-ttl" has a default, so it should NOT appear in the error
+			Expect(readyCond.Message).NotTo(ContainSubstring("cache-ttl"))
+
+			// AWS create should NOT have been called
+			Expect(mockClient.CreateCallCount).To(Equal(0))
+		})
+
+		It("should allow creation when required parameters are provided", func() {
+			mockClient.DistributionInfos[distributionId] = &cfaws.DistributionInfo{
+				ID:                   distributionId,
+				DomainName:           "d111111abcdef8.cloudfront.net",
+				ViewerCertificateArn: "arn:aws:acm:us-east-1:123456789012:certificate/wildcard",
+				ParameterDefinitions: []cfaws.ParameterDefinitionOutput{
+					{Name: "origin-domain", Required: true, DefaultValue: ""},
+				},
+			}
+
+			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
+			tenant.Spec.Parameters = []cloudfrontv1alpha1.Parameter{
+				{Name: "origin-domain", Value: "api.example.com"},
+			}
+			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
+			// Add finalizer + create
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueShort))
+			Expect(mockClient.CreateCallCount).To(Equal(1))
+		})
+
+		It("should proceed with creation if distribution info fetch fails (graceful degradation)", func() {
+			// Make GetDistributionInfo return an error
+			mockClient.GetDistributionInfoError = cfaws.ErrAccessDenied
+
+			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
+			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
+			// Add finalizer
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+
+			// Create: should proceed despite validation info being unavailable
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueShort))
+			Expect(mockClient.CreateCallCount).To(Equal(1))
+		})
+	})
+
+	Context("Managed certificate lifecycle", func() {
+		It("should track managed certificate status through lifecycle", func() {
+			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
+			tenant.Spec.ManagedCertificateRequest = &cloudfrontv1alpha1.ManagedCertificateRequest{
+				ValidationTokenHost: "self-hosted",
+			}
+			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
+			// Add finalizer + create
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+			awsID := tenant.Status.ID
+			mockClient.SetTenantStatus(awsID, "Deployed")
+
+			// Set managed cert as pending-validation
+			mockClient.ManagedCertDetails[awsID] = &cfaws.ManagedCertificateDetailsOutput{
+				CertificateStatus:   "pending-validation",
+				ValidationTokenHost: "self-hosted",
+				ValidationTokenDetails: []cfaws.ValidationTokenDetailOutput{
+					{
+						Domain:       "example.com",
+						RedirectFrom: "http://example.com/.well-known/pki-validation/token",
+						RedirectTo:   "http://d111.cloudfront.net/.well-known/pki-validation/token",
+					},
+				},
+			}
+
+			// Reconcile: should set CertificateReady=False with pending status
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			// Should poll more frequently when cert is pending
+			Expect(result.RequeueAfter).To(Equal(requeueShort))
+
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+			certCond := meta.FindStatusCondition(tenant.Status.Conditions, cloudfrontv1alpha1.ConditionTypeCertificateReady)
+			Expect(certCond).NotTo(BeNil())
+			Expect(certCond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(certCond.Reason).To(Equal(cloudfrontv1alpha1.ReasonCertPending))
+			// Should include validation token details
+			Expect(certCond.Message).To(ContainSubstring("validation tokens"))
+			Expect(tenant.Status.ManagedCertificateStatus).To(Equal("pending-validation"))
+		})
+
+		It("should trigger update when managed certificate is issued but domains inactive", func() {
+			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
+			tenant.Spec.ManagedCertificateRequest = &cloudfrontv1alpha1.ManagedCertificateRequest{
+				ValidationTokenHost: "self-hosted",
+			}
+			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
+			// Add finalizer + create
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+			awsID := tenant.Status.ID
+
+			// Set tenant as deployed but with inactive domains
+			mockClient.SetTenantStatus(awsID, "Deployed")
+			awsTenant := mockClient.GetTenant(awsID)
+			awsTenant.Domains = []cfaws.DomainResultOutput{
+				{Domain: "example.com", Status: "inactive"},
+			}
+
+			// Set managed cert as issued
+			certArn := "arn:aws:acm:us-east-1:123456789012:certificate/managed-cert-1234"
+			mockClient.ManagedCertDetails[awsID] = &cfaws.ManagedCertificateDetailsOutput{
+				CertificateArn:      certArn,
+				CertificateStatus:   "issued",
+				ValidationTokenHost: "self-hosted",
+			}
+
+			updateCountBefore := mockClient.UpdateCallCount
+
+			// Reconcile: should trigger an update to nudge cert attachment
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify an update was triggered
+			Expect(mockClient.UpdateCallCount).To(BeNumerically(">", updateCountBefore))
+
+			// Verify cert ARN is tracked in status
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+			Expect(tenant.Status.CertificateArn).To(Equal(certArn))
+			Expect(tenant.Status.ManagedCertificateStatus).To(Equal("issued"))
+		})
+
+		It("should report certificate failure in CertificateReady condition", func() {
+			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
+			tenant.Spec.ManagedCertificateRequest = &cloudfrontv1alpha1.ManagedCertificateRequest{
+				ValidationTokenHost: "cloudfront",
+			}
+			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
+			// Add finalizer + create
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+			awsID := tenant.Status.ID
+			mockClient.SetTenantStatus(awsID, "Deployed")
+
+			// Set managed cert as failed
+			mockClient.ManagedCertDetails[awsID] = &cfaws.ManagedCertificateDetailsOutput{
+				CertificateStatus:   "validation-timed-out",
+				ValidationTokenHost: "cloudfront",
+			}
+
+			// Reconcile
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify CertificateReady shows failure
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+			certCond := meta.FindStatusCondition(tenant.Status.Conditions, cloudfrontv1alpha1.ConditionTypeCertificateReady)
+			Expect(certCond).NotTo(BeNil())
+			Expect(certCond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(certCond.Reason).To(Equal(cloudfrontv1alpha1.ReasonCertFailed))
+			Expect(certCond.Message).To(ContainSubstring("validation-timed-out"))
+		})
+	})
 })
 
 // newTestTenant creates a DistributionTenant CR for testing.
+//
+//nolint:unparam
 func newTestTenant(name, namespace, distributionId string) *cloudfrontv1alpha1.DistributionTenant {
 	enabled := true
 	return &cloudfrontv1alpha1.DistributionTenant{

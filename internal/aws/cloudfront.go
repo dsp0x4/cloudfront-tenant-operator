@@ -18,6 +18,7 @@ package aws
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/cloudfront"
@@ -31,6 +32,8 @@ type cloudFrontAPI interface {
 	GetDistributionTenant(ctx context.Context, params *cloudfront.GetDistributionTenantInput, optFns ...func(*cloudfront.Options)) (*cloudfront.GetDistributionTenantOutput, error)
 	UpdateDistributionTenant(ctx context.Context, params *cloudfront.UpdateDistributionTenantInput, optFns ...func(*cloudfront.Options)) (*cloudfront.UpdateDistributionTenantOutput, error)
 	DeleteDistributionTenant(ctx context.Context, params *cloudfront.DeleteDistributionTenantInput, optFns ...func(*cloudfront.Options)) (*cloudfront.DeleteDistributionTenantOutput, error)
+	GetDistribution(ctx context.Context, params *cloudfront.GetDistributionInput, optFns ...func(*cloudfront.Options)) (*cloudfront.GetDistributionOutput, error)
+	GetManagedCertificateDetails(ctx context.Context, params *cloudfront.GetManagedCertificateDetailsInput, optFns ...func(*cloudfront.Options)) (*cloudfront.GetManagedCertificateDetailsOutput, error)
 }
 
 // RealCloudFrontClient is the production implementation of CloudFrontClient
@@ -172,6 +175,83 @@ func (c *RealCloudFrontClient) DeleteDistributionTenant(ctx context.Context, id 
 		IfMatch: aws.String(ifMatch),
 	})
 	return classifyAWSError(err)
+}
+
+// GetDistributionInfo retrieves configuration details about the parent distribution.
+func (c *RealCloudFrontClient) GetDistributionInfo(ctx context.Context, distributionId string) (*DistributionInfo, error) {
+	out, err := c.api.GetDistribution(ctx, &cloudfront.GetDistributionInput{
+		Id: aws.String(distributionId),
+	})
+	if err != nil {
+		return nil, classifyAWSError(err)
+	}
+
+	if out.Distribution == nil || out.Distribution.DistributionConfig == nil {
+		return nil, fmt.Errorf("distribution %s has no configuration", distributionId)
+	}
+
+	dist := out.Distribution
+	cfg := dist.DistributionConfig
+	info := &DistributionInfo{
+		ID:         aws.ToString(dist.Id),
+		DomainName: aws.ToString(dist.DomainName),
+	}
+
+	if cfg.ViewerCertificate != nil {
+		vc := cfg.ViewerCertificate
+		info.ViewerCertificateArn = aws.ToString(vc.ACMCertificateArn)
+		info.UsesCloudFrontDefaultCert = aws.ToBool(vc.CloudFrontDefaultCertificate)
+	}
+
+	if cfg.TenantConfig != nil {
+		for _, pd := range cfg.TenantConfig.ParameterDefinitions {
+			pdo := ParameterDefinitionOutput{
+				Name: aws.ToString(pd.Name),
+			}
+			if pd.Definition != nil && pd.Definition.StringSchema != nil {
+				pdo.Required = aws.ToBool(pd.Definition.StringSchema.Required)
+				pdo.DefaultValue = aws.ToString(pd.Definition.StringSchema.DefaultValue)
+			}
+			info.ParameterDefinitions = append(info.ParameterDefinitions, pdo)
+		}
+	}
+
+	return info, nil
+}
+
+// GetManagedCertificateDetails retrieves managed certificate details for a tenant.
+func (c *RealCloudFrontClient) GetManagedCertificateDetails(ctx context.Context, tenantIdentifier string) (*ManagedCertificateDetailsOutput, error) {
+	out, err := c.api.GetManagedCertificateDetails(ctx, &cloudfront.GetManagedCertificateDetailsInput{
+		Identifier: aws.String(tenantIdentifier),
+	})
+	if err != nil {
+		// If there's no managed cert configured, the API may return NotFound.
+		if IsNotFound(classifyAWSError(err)) {
+			return nil, nil
+		}
+		return nil, classifyAWSError(err)
+	}
+
+	if out.ManagedCertificateDetails == nil {
+		return nil, nil
+	}
+
+	details := out.ManagedCertificateDetails
+	result := &ManagedCertificateDetailsOutput{
+		CertificateArn:      aws.ToString(details.CertificateArn),
+		CertificateStatus:   string(details.CertificateStatus),
+		ValidationTokenHost: string(details.ValidationTokenHost),
+	}
+
+	for _, vtd := range details.ValidationTokenDetails {
+		result.ValidationTokenDetails = append(result.ValidationTokenDetails, ValidationTokenDetailOutput{
+			Domain:       aws.ToString(vtd.Domain),
+			RedirectFrom: aws.ToString(vtd.RedirectFrom),
+			RedirectTo:   aws.ToString(vtd.RedirectTo),
+		})
+	}
+
+	return result, nil
 }
 
 // toAWSCustomizations converts our domain type to the AWS SDK type.

@@ -264,6 +264,12 @@ spec:
               arn:
                 description: arn is the Amazon Resource Name of the distribution tenant.
                 type: string
+              certificateArn:
+                description: |-
+                  certificateArn is the ARN of the ACM certificate associated with this
+                  tenant, either from a custom certificate customization or a managed
+                  certificate issued by CloudFront.
+                type: string
               conditions:
                 description: |-
                   conditions represent the latest available observations of the
@@ -377,6 +383,22 @@ spec:
                   modified in AWS.
                 format: date-time
                 type: string
+              managedCertificateStatus:
+                description: |-
+                  managedCertificateStatus is the lifecycle status of the CloudFront-managed
+                  ACM certificate: "pending-validation", "issued", "inactive", "expired",
+                  "validation-timed-out", "revoked", "failed".
+                  Only set when a managedCertificateRequest is configured in the spec.
+                type: string
+              observedGeneration:
+                description: |-
+                  observedGeneration is the most recent generation of the spec that the
+                  controller has successfully reconciled. Used for three-way diff: if
+                  metadata.generation != observedGeneration, the spec was modified since
+                  the last successful reconciliation. Combined with a spec-vs-AWS
+                  comparison, this distinguishes user-initiated changes from external drift.
+                format: int64
+                type: integer
             type: object
         required:
         - spec

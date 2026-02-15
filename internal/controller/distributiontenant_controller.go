@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -40,14 +41,16 @@ import (
 const (
 	requeueShort = 30 * time.Second
 	requeueLong  = 5 * time.Minute
+	resultError  = "error"
 )
 
 // DistributionTenantReconciler reconciles a DistributionTenant object.
 type DistributionTenantReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	CFClient cfaws.CloudFrontClient
-	Recorder record.EventRecorder
+	Scheme      *runtime.Scheme
+	CFClient    cfaws.CloudFrontClient
+	Recorder    record.EventRecorder
+	DriftPolicy DriftPolicy
 }
 
 // +kubebuilder:rbac:groups=cloudfront-tenant-operator.io,resources=distributiontenants,verbs=get;list;watch;create;update;patch;delete
@@ -75,7 +78,7 @@ func (r *DistributionTenantReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if !tenant.DeletionTimestamp.IsZero() {
 		res, err := r.reconcileDelete(ctx, &tenant)
 		if err != nil {
-			result = "error"
+			result = resultError
 		}
 		return res, err
 	}
@@ -84,10 +87,10 @@ func (r *DistributionTenantReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if !controllerutil.ContainsFinalizer(&tenant, cloudfrontv1alpha1.FinalizerName) {
 		controllerutil.AddFinalizer(&tenant, cloudfrontv1alpha1.FinalizerName)
 		if err := r.Update(ctx, &tenant); err != nil {
-			result = "error"
+			result = resultError
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
 	}
 
 	// 4. Create or update
@@ -100,7 +103,7 @@ func (r *DistributionTenantReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 
 	if err != nil {
-		result = "error"
+		result = resultError
 	}
 	return res, err
 }
@@ -185,9 +188,16 @@ func (r *DistributionTenantReconciler) reconcileDelete(ctx context.Context, tena
 }
 
 // reconcileCreate handles creating a new distribution tenant in AWS.
+// It performs spec validation against the distribution configuration before
+// calling the AWS API, giving users clear error messages for misconfigurations.
 func (r *DistributionTenantReconciler) reconcileCreate(ctx context.Context, tenant *cloudfrontv1alpha1.DistributionTenant) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	log.Info("Creating distribution tenant in AWS", "name", tenant.Spec.Name)
+
+	// Validate spec against distribution configuration before calling AWS
+	if res, handled := r.validateSpec(ctx, tenant); handled {
+		return res, nil
+	}
 
 	input := buildCreateInput(tenant)
 	out, err := r.CFClient.CreateDistributionTenant(ctx, input)
@@ -200,6 +210,7 @@ func (r *DistributionTenantReconciler) reconcileCreate(ctx context.Context, tena
 	tenant.Status.Arn = out.Arn
 	tenant.Status.ETag = out.ETag
 	tenant.Status.DistributionTenantStatus = out.Status
+	tenant.Status.ObservedGeneration = tenant.Generation
 	updateStatusFromAWS(tenant, out)
 
 	setCondition(tenant, cloudfrontv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
@@ -208,7 +219,7 @@ func (r *DistributionTenantReconciler) reconcileCreate(ctx context.Context, tena
 		cloudfrontv1alpha1.ReasonInSync, "Spec is in sync with AWS")
 
 	// Set initial CertificateReady condition
-	updateCertificateCondition(tenant)
+	updateCertificateCondition(tenant, nil)
 
 	if err := r.Status().Update(ctx, tenant); err != nil {
 		return ctrl.Result{}, err
@@ -246,43 +257,56 @@ func (r *DistributionTenantReconciler) reconcileExisting(ctx context.Context, te
 	tenant.Status.DistributionTenantStatus = awsTenant.Status
 	updateStatusFromAWS(tenant, awsTenant)
 
+	// Fetch managed certificate details if configured
+	var certDetails *cfaws.ManagedCertificateDetailsOutput
+	if tenant.Spec.ManagedCertificateRequest != nil {
+		certDetails, err = r.CFClient.GetManagedCertificateDetails(ctx, tenant.Status.ID)
+		if err != nil {
+			log.Error(err, "Failed to get managed certificate details", "id", tenant.Status.ID)
+			// Non-fatal: continue reconciliation, cert status will be stale
+		}
+		if certDetails != nil {
+			tenant.Status.CertificateArn = certDetails.CertificateArn
+			tenant.Status.ManagedCertificateStatus = certDetails.CertificateStatus
+		}
+	}
+
 	// If still deploying, wait
 	if awsTenant.Status == "InProgress" {
 		log.Info("Distribution tenant is still deploying", "id", tenant.Status.ID)
 		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
 			cloudfrontv1alpha1.ReasonDeploying, "Distribution tenant deployment is in progress")
-		updateCertificateCondition(tenant)
+		updateCertificateCondition(tenant, certDetails)
 		if err := r.Status().Update(ctx, tenant); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: requeueShort}, nil
 	}
 
-	// Check if spec has changed vs AWS state (user-initiated update)
-	if needsUpdate(tenant, awsTenant) {
-		return r.reconcileUpdate(ctx, tenant, awsTenant)
-	}
+	// Three-way diff: compare spec, last-reconciled generation, and AWS state.
+	change := detectChanges(tenant, awsTenant)
+	log.V(1).Info("Change detection result", "id", tenant.Status.ID, "change", change.String(),
+		"generation", tenant.Generation, "observedGeneration", tenant.Status.ObservedGeneration)
 
-	// Check for external drift (AWS state changed outside the operator)
-	if hasDrift(tenant, awsTenant) {
-		log.Info("Drift detected between spec and AWS state", "id", tenant.Status.ID)
-		r.recordEvent(tenant, "Warning", "DriftDetected", "External drift detected: AWS state differs from spec")
-		cfmetrics.DriftDetectedCount.WithLabelValues(tenant.Namespace, tenant.Name).Inc()
-		now := metav1.Now()
-		tenant.Status.LastDriftCheckTime = &now
-		tenant.Status.DriftDetected = true
-		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeSynced, metav1.ConditionFalse,
-			cloudfrontv1alpha1.ReasonDriftDetected, "External drift detected: AWS state differs from K8s spec")
-		if err := r.Status().Update(ctx, tenant); err != nil {
-			return ctrl.Result{}, err
+	switch change {
+	case changeSpec:
+		log.Info("Spec changed since last reconciliation, updating AWS",
+			"id", tenant.Status.ID, "generation", tenant.Generation)
+		// Validate spec before update
+		if res, handled := r.validateSpec(ctx, tenant); handled {
+			return res, nil
 		}
-		return ctrl.Result{RequeueAfter: requeueLong}, nil
+		return r.reconcileUpdate(ctx, tenant, awsTenant)
+
+	case changeDrift:
+		return r.handleDrift(ctx, tenant, awsTenant, log)
 	}
 
-	// Update drift check time
+	// changeNone: update drift check time and keep observedGeneration in sync
 	now := metav1.Now()
 	tenant.Status.LastDriftCheckTime = &now
 	tenant.Status.DriftDetected = false
+	tenant.Status.ObservedGeneration = tenant.Generation
 
 	// Steady state: everything is in sync
 	setCondition(tenant, cloudfrontv1alpha1.ConditionTypeReady, metav1.ConditionTrue,
@@ -291,13 +315,37 @@ func (r *DistributionTenantReconciler) reconcileExisting(ctx context.Context, te
 		cloudfrontv1alpha1.ReasonInSync, "Spec is in sync with AWS")
 
 	// Update certificate readiness condition
-	updateCertificateCondition(tenant)
+	updateCertificateCondition(tenant, certDetails)
 
-	// Update tenant status gauge
+	// TODO: TenantCount.Set(1) is wrong — it overwrites the gauge to 1 on every
+	// reconcile instead of tracking the actual number of deployed tenants.
+	// Replace with a periodic re-count (e.g. list all tenants and set the gauge)
+	// or use Inc/Dec on state transitions with a full recount on startup.
 	cfmetrics.TenantCount.WithLabelValues(tenant.Namespace, "Deployed").Set(1)
 
 	if err := r.Status().Update(ctx, tenant); err != nil {
 		return ctrl.Result{}, err
+	}
+
+	// If managed certificate is pending validation, requeue more frequently
+	// to detect cert issuance sooner and trigger attachment.
+	if certDetails != nil && certDetails.CertificateStatus == "pending-validation" {
+		log.Info("Managed certificate is pending validation, polling more frequently",
+			"id", tenant.Status.ID, "certArn", certDetails.CertificateArn)
+		return ctrl.Result{RequeueAfter: requeueShort}, nil
+	}
+
+	// If the managed certificate is issued but the tenant's customizations
+	// don't yet include the certificate (domains may be inactive), trigger an
+	// update to nudge CloudFront into attaching the cert.
+	if certDetails != nil && certDetails.CertificateStatus == "issued" && certDetails.CertificateArn != "" {
+		if !allDomainsActive(tenant) {
+			log.Info("Managed certificate is issued but domains are not yet active, triggering update to attach certificate",
+				"id", tenant.Status.ID, "certArn", certDetails.CertificateArn)
+			r.recordEvent(tenant, "Normal", "CertificateIssued",
+				fmt.Sprintf("Managed certificate %s issued, triggering attachment", certDetails.CertificateArn))
+			return r.reconcileUpdate(ctx, tenant, awsTenant)
+		}
 	}
 
 	return ctrl.Result{RequeueAfter: requeueLong}, nil
@@ -312,15 +360,27 @@ func (r *DistributionTenantReconciler) reconcileUpdate(ctx context.Context, tena
 	out, err := r.CFClient.UpdateDistributionTenant(ctx, input)
 	if err != nil {
 		if cfaws.IsPreconditionFailed(err) {
-			// ETag mismatch: re-fetch and retry
+			// ETag mismatch: re-fetch and retry.
+			//
+			// We intentionally use the deprecated Requeue field here because:
+			// 1. We want the work queue's rate limiter (exponential backoff) to
+			//    handle repeated ETag conflicts, rather than picking an arbitrary
+			//    fixed interval via RequeueAfter.
+			// 2. Returning an error would increment controller_runtime_reconcile_errors_total,
+			//    which is misleading since an ETag mismatch is expected under
+			//    concurrent updates, not a controller failure.
+			//
+			// This is an open discussion in the controller-runtime community:
+			// https://github.com/kubernetes-sigs/controller-runtime/issues/3297
 			log.Info("ETag mismatch during update, will retry")
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{Requeue: true}, nil //nolint:staticcheck // see comment above
 		}
 		return r.handleAWSError(ctx, tenant, err, "update")
 	}
 
 	tenant.Status.ETag = out.ETag
 	tenant.Status.DistributionTenantStatus = out.Status
+	tenant.Status.ObservedGeneration = tenant.Generation
 	updateStatusFromAWS(tenant, out)
 
 	setCondition(tenant, cloudfrontv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
@@ -334,6 +394,47 @@ func (r *DistributionTenantReconciler) reconcileUpdate(ctx context.Context, tena
 
 	r.recordEvent(tenant, "Normal", "Updated", "Distribution tenant update submitted to AWS")
 	return ctrl.Result{RequeueAfter: requeueShort}, nil
+}
+
+// handleDrift responds to external drift according to the configured DriftPolicy.
+func (r *DistributionTenantReconciler) handleDrift(ctx context.Context, tenant *cloudfrontv1alpha1.DistributionTenant, awsTenant *cfaws.DistributionTenantOutput, log logr.Logger) (ctrl.Result, error) {
+	log.Info("External drift detected: AWS state was modified outside the operator",
+		"id", tenant.Status.ID, "driftPolicy", r.DriftPolicy)
+	cfmetrics.DriftDetectedCount.WithLabelValues(tenant.Namespace, tenant.Name).Inc()
+
+	now := metav1.Now()
+	tenant.Status.LastDriftCheckTime = &now
+	tenant.Status.DriftDetected = true
+
+	switch r.DriftPolicy {
+	case DriftPolicyEnforce:
+		// Overwrite AWS with the K8s spec (spec is the source of truth).
+		r.recordEvent(tenant, "Warning", "DriftCorrected",
+			"External drift detected, enforcing K8s spec as source of truth")
+		log.Info("Enforcing spec over drifted AWS state", "id", tenant.Status.ID)
+		return r.reconcileUpdate(ctx, tenant, awsTenant)
+
+	case DriftPolicySuspend:
+		// Acknowledge drift but don't report it as a problem.
+		log.Info("Drift detection is suspended, ignoring external changes",
+			"id", tenant.Status.ID)
+		// Still update the drift check time so the status is fresh.
+		if err := r.Status().Update(ctx, tenant); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: requeueLong}, nil
+
+	default: // DriftPolicyReport (and fallback)
+		r.recordEvent(tenant, "Warning", "DriftDetected",
+			"External drift detected: AWS state differs from K8s spec (spec unchanged since last successful reconciliation)")
+		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeSynced, metav1.ConditionFalse,
+			cloudfrontv1alpha1.ReasonDriftDetected,
+			"External drift detected: AWS state was modified outside the operator while K8s spec remained unchanged")
+		if err := r.Status().Update(ctx, tenant); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: requeueLong}, nil
+	}
 }
 
 // handleAWSError classifies AWS errors into terminal (set condition, don't retry)
@@ -380,9 +481,96 @@ func (r *DistributionTenantReconciler) handleAWSError(ctx context.Context, tenan
 	return ctrl.Result{}, fmt.Errorf("AWS %s failed (retryable): %w", operation, err)
 }
 
+// validateSpec checks the tenant's spec against the parent distribution
+// configuration. It returns (result, handled) where handled=true means
+// a validation error was found and the caller should return the result
+// without an error (terminal validation failures are non-retryable).
+func (r *DistributionTenantReconciler) validateSpec(ctx context.Context, tenant *cloudfrontv1alpha1.DistributionTenant) (ctrl.Result, bool) { //nolint:unparam
+	log := logf.FromContext(ctx)
+
+	distInfo, err := r.CFClient.GetDistributionInfo(ctx, tenant.Spec.DistributionId)
+	if err != nil {
+		// If we can't fetch distribution info, log a warning but let the
+		// request proceed -- the AWS API will catch any real errors.
+		log.Error(err, "Failed to fetch distribution info for validation; proceeding without local validation",
+			"distributionId", tenant.Spec.DistributionId)
+		return ctrl.Result{}, false
+	}
+
+	var validationErrors []string
+
+	// 1. Certificate coverage check:
+	// If the distribution uses the CloudFront default cert (*.cloudfront.net)
+	// or has no custom ACM cert, the tenant MUST provide either a custom
+	// certificate ARN or a managed certificate request.
+	if distInfo.UsesCloudFrontDefaultCert || distInfo.ViewerCertificateArn == "" {
+		hasCertCoverage := false
+		if tenant.Spec.Customizations != nil && tenant.Spec.Customizations.Certificate != nil {
+			hasCertCoverage = true
+		}
+		if tenant.Spec.ManagedCertificateRequest != nil {
+			hasCertCoverage = true
+		}
+		if !hasCertCoverage {
+			validationErrors = append(validationErrors,
+				"the parent distribution does not have a custom ACM certificate; "+
+					"the tenant must provide either spec.customizations.certificate.arn "+
+					"or spec.managedCertificateRequest to cover its domain(s)")
+		}
+	}
+
+	// 2. Managed cert validationTokenHost="cloudfront" advisory:
+	// When using cloudfront-hosted validation, the domain must already be
+	// pointed to CloudFront. We can't verify DNS, but we set a clear message.
+	if tenant.Spec.ManagedCertificateRequest != nil &&
+		tenant.Spec.ManagedCertificateRequest.ValidationTokenHost == "cloudfront" {
+		log.Info("Managed certificate uses cloudfront validation: domain(s) must already have DNS CNAME pointing to CloudFront",
+			"domains", domainsToStrings(tenant.Spec.Domains))
+	}
+
+	// 3. Required parameters check:
+	// Any parameter marked as required in the distribution (without a default
+	// value) must be provided by the tenant.
+	if len(distInfo.ParameterDefinitions) > 0 {
+		tenantParams := make(map[string]string, len(tenant.Spec.Parameters))
+		for _, p := range tenant.Spec.Parameters {
+			tenantParams[p.Name] = p.Value
+		}
+
+		var missingParams []string
+		for _, pd := range distInfo.ParameterDefinitions {
+			if pd.Required && pd.DefaultValue == "" {
+				if _, ok := tenantParams[pd.Name]; !ok {
+					missingParams = append(missingParams, pd.Name)
+				}
+			}
+		}
+		if len(missingParams) > 0 {
+			validationErrors = append(validationErrors,
+				fmt.Sprintf("the parent distribution requires the following parameter(s) that are not provided: %s",
+					strings.Join(missingParams, ", ")))
+		}
+	}
+
+	if len(validationErrors) > 0 {
+		msg := fmt.Sprintf("Spec validation failed: %s", strings.Join(validationErrors, "; "))
+		log.Info("Spec validation failed", "errors", validationErrors)
+		r.recordEvent(tenant, "Warning", cloudfrontv1alpha1.ReasonValidationFailed, msg)
+		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
+			cloudfrontv1alpha1.ReasonValidationFailed, msg)
+		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeSynced, metav1.ConditionFalse,
+			cloudfrontv1alpha1.ReasonValidationFailed, msg)
+		_ = r.Status().Update(ctx, tenant)
+		// Don't requeue aggressively; the user needs to fix the spec.
+		return ctrl.Result{RequeueAfter: requeueLong}, true
+	}
+
+	return ctrl.Result{}, false
+}
+
 // updateCertificateCondition sets the CertificateReady condition based on
-// whether a managed certificate is configured and the domain results from AWS.
-func updateCertificateCondition(tenant *cloudfrontv1alpha1.DistributionTenant) {
+// the managed certificate details and domain results from AWS.
+func updateCertificateCondition(tenant *cloudfrontv1alpha1.DistributionTenant, certDetails *cfaws.ManagedCertificateDetailsOutput) {
 	if tenant.Spec.ManagedCertificateRequest == nil {
 		// No managed cert configured -- set condition to indicate this
 		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeCertificateReady, metav1.ConditionTrue,
@@ -390,16 +578,53 @@ func updateCertificateCondition(tenant *cloudfrontv1alpha1.DistributionTenant) {
 		return
 	}
 
-	// Check domain results for all domains being active
-	allActive := len(tenant.Status.DomainResults) > 0
-	for _, dr := range tenant.Status.DomainResults {
-		if dr.Status != "active" {
-			allActive = false
-			break
+	// Use managed certificate details if available for a more accurate status
+	if certDetails != nil {
+		switch certDetails.CertificateStatus {
+		case "issued":
+			if allDomainsActive(tenant) {
+				setCondition(tenant, cloudfrontv1alpha1.ConditionTypeCertificateReady, metav1.ConditionTrue,
+					cloudfrontv1alpha1.ReasonCertValidated,
+					fmt.Sprintf("Managed certificate %s is validated and active", certDetails.CertificateArn))
+			} else {
+				setCondition(tenant, cloudfrontv1alpha1.ConditionTypeCertificateReady, metav1.ConditionFalse,
+					cloudfrontv1alpha1.ReasonCertPending,
+					fmt.Sprintf("Managed certificate %s is issued but not yet attached to all domains", certDetails.CertificateArn))
+			}
+		case "pending-validation":
+			msg := "Managed certificate validation is pending"
+			if certDetails.ValidationTokenHost == "self-hosted" && len(certDetails.ValidationTokenDetails) > 0 {
+				// Include validation token details to help the user
+				var tokenInfo []string
+				for _, vtd := range certDetails.ValidationTokenDetails {
+					if vtd.RedirectFrom != "" && vtd.RedirectTo != "" {
+						tokenInfo = append(tokenInfo, fmt.Sprintf("%s: redirect %s -> %s",
+							vtd.Domain, vtd.RedirectFrom, vtd.RedirectTo))
+					}
+				}
+				if len(tokenInfo) > 0 {
+					msg += "; serve these HTTP validation tokens: " + strings.Join(tokenInfo, "; ")
+				}
+			} else if certDetails.ValidationTokenHost == "cloudfront" {
+				msg += "; ensure DNS CNAME records point to CloudFront"
+			}
+			setCondition(tenant, cloudfrontv1alpha1.ConditionTypeCertificateReady, metav1.ConditionFalse,
+				cloudfrontv1alpha1.ReasonCertPending, msg)
+		case "failed", "validation-timed-out", "revoked", "expired":
+			setCondition(tenant, cloudfrontv1alpha1.ConditionTypeCertificateReady, metav1.ConditionFalse,
+				cloudfrontv1alpha1.ReasonCertFailed,
+				fmt.Sprintf("Managed certificate has status %q; you may need to recreate the tenant or check DNS configuration",
+					certDetails.CertificateStatus))
+		default:
+			setCondition(tenant, cloudfrontv1alpha1.ConditionTypeCertificateReady, metav1.ConditionFalse,
+				cloudfrontv1alpha1.ReasonCertPending,
+				fmt.Sprintf("Managed certificate status: %s", certDetails.CertificateStatus))
 		}
+		return
 	}
 
-	if allActive {
+	// Fallback: use domain results if cert details are not available
+	if allDomainsActive(tenant) {
 		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeCertificateReady, metav1.ConditionTrue,
 			cloudfrontv1alpha1.ReasonCertValidated, "Managed certificate is validated and active")
 	} else {
@@ -408,39 +633,26 @@ func updateCertificateCondition(tenant *cloudfrontv1alpha1.DistributionTenant) {
 	}
 }
 
-// hasDrift checks if the AWS state has diverged from what the operator last
-// applied (external drift). This is different from needsUpdate which checks
-// if the user changed the spec.
-func hasDrift(tenant *cloudfrontv1alpha1.DistributionTenant, awsTenant *cfaws.DistributionTenantOutput) bool {
-	// Compare enabled state
-	specEnabled := true
-	if tenant.Spec.Enabled != nil {
-		specEnabled = *tenant.Spec.Enabled
+// allDomainsActive returns true if all domain results are "active".
+func allDomainsActive(tenant *cloudfrontv1alpha1.DistributionTenant) bool {
+	if len(tenant.Status.DomainResults) == 0 {
+		return false
 	}
-	if specEnabled != awsTenant.Enabled {
-		return true
-	}
-
-	// Compare distribution ID
-	if tenant.Spec.DistributionId != awsTenant.DistributionId {
-		return true
-	}
-
-	// Compare domains
-	if len(tenant.Spec.Domains) != len(awsTenant.Domains) {
-		return true
-	}
-	specDomains := make(map[string]bool)
-	for _, d := range tenant.Spec.Domains {
-		specDomains[d.Domain] = true
-	}
-	for _, d := range awsTenant.Domains {
-		if !specDomains[d.Domain] {
-			return true
+	for _, dr := range tenant.Status.DomainResults {
+		if dr.Status != "active" {
+			return false
 		}
 	}
+	return true
+}
 
-	return false
+// domainsToStrings extracts domain strings from a DomainSpec slice.
+func domainsToStrings(domains []cloudfrontv1alpha1.DomainSpec) []string {
+	out := make([]string, len(domains))
+	for i, d := range domains {
+		out[i] = d.Domain
+	}
+	return out
 }
 
 // recordEvent emits a Kubernetes event if the recorder is configured.
@@ -509,53 +721,6 @@ func buildUpdateInput(tenant *cloudfrontv1alpha1.DistributionTenant, eTag string
 	}
 
 	return input
-}
-
-// needsUpdate compares the CRD spec with the AWS state to determine if an update is needed.
-func needsUpdate(tenant *cloudfrontv1alpha1.DistributionTenant, awsTenant *cfaws.DistributionTenantOutput) bool {
-	// Compare enabled state
-	specEnabled := true
-	if tenant.Spec.Enabled != nil {
-		specEnabled = *tenant.Spec.Enabled
-	}
-	if specEnabled != awsTenant.Enabled {
-		return true
-	}
-
-	// Compare domains
-	if len(tenant.Spec.Domains) != len(awsTenant.Domains) {
-		return true
-	}
-	specDomains := make(map[string]bool)
-	for _, d := range tenant.Spec.Domains {
-		specDomains[d.Domain] = true
-	}
-	for _, d := range awsTenant.Domains {
-		if !specDomains[d.Domain] {
-			return true
-		}
-	}
-
-	// Compare parameters
-	if len(tenant.Spec.Parameters) != len(awsTenant.Parameters) {
-		return true
-	}
-	specParams := make(map[string]string)
-	for _, p := range tenant.Spec.Parameters {
-		specParams[p.Name] = p.Value
-	}
-	for _, p := range awsTenant.Parameters {
-		if specParams[p.Name] != p.Value {
-			return true
-		}
-	}
-
-	// Compare distribution ID
-	if tenant.Spec.DistributionId != awsTenant.DistributionId {
-		return true
-	}
-
-	return false
 }
 
 // updateStatusFromAWS updates the CRD status fields from the AWS response.

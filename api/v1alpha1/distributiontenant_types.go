@@ -205,6 +205,14 @@ type Tag struct {
 
 // DistributionTenantStatus defines the observed state of DistributionTenant.
 type DistributionTenantStatus struct {
+	// observedGeneration is the most recent generation of the spec that the
+	// controller has successfully reconciled. Used for three-way diff: if
+	// metadata.generation != observedGeneration, the spec was modified since
+	// the last successful reconciliation. Combined with a spec-vs-AWS
+	// comparison, this distinguishes user-initiated changes from external drift.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
 	// id is the AWS-assigned ID of the distribution tenant.
 	// +optional
 	ID string `json:"id,omitempty"`
@@ -235,6 +243,19 @@ type DistributionTenantStatus struct {
 	// domainResults reflects the status of each domain as reported by AWS.
 	// +optional
 	DomainResults []DomainResult `json:"domainResults,omitempty"`
+
+	// certificateArn is the ARN of the ACM certificate associated with this
+	// tenant, either from a custom certificate customization or a managed
+	// certificate issued by CloudFront.
+	// +optional
+	CertificateArn string `json:"certificateArn,omitempty"`
+
+	// managedCertificateStatus is the lifecycle status of the CloudFront-managed
+	// ACM certificate: "pending-validation", "issued", "inactive", "expired",
+	// "validation-timed-out", "revoked", "failed".
+	// Only set when a managedCertificateRequest is configured in the spec.
+	// +optional
+	ManagedCertificateStatus string `json:"managedCertificateStatus,omitempty"`
 
 	// lastDriftCheckTime is the timestamp of the last drift detection check.
 	// +optional
@@ -278,21 +299,25 @@ const (
 
 // Condition reason constants.
 const (
-	ReasonDeployed          = "Deployed"
-	ReasonDeploying         = "Deploying"
-	ReasonCreating          = "Creating"
-	ReasonDeleting          = "Deleting"
-	ReasonDisabling         = "Disabling"
-	ReasonInSync            = "InSync"
-	ReasonDriftDetected     = "DriftDetected"
-	ReasonUpdatePending     = "UpdatePending"
-	ReasonDomainConflict    = "DomainConflict"
-	ReasonAccessDenied      = "AccessDenied"
-	ReasonInvalidSpec       = "InvalidSpec"
-	ReasonAWSError          = "AWSError"
-	ReasonCertValidated     = "Validated"
-	ReasonCertPending       = "PendingValidation"
-	ReasonCertNotConfigured = "NotConfigured"
+	ReasonDeployed           = "Deployed"
+	ReasonDeploying          = "Deploying"
+	ReasonCreating           = "Creating"
+	ReasonDeleting           = "Deleting"
+	ReasonDisabling          = "Disabling"
+	ReasonInSync             = "InSync"
+	ReasonDriftDetected      = "DriftDetected"
+	ReasonUpdatePending      = "UpdatePending"
+	ReasonDomainConflict     = "DomainConflict"
+	ReasonAccessDenied       = "AccessDenied"
+	ReasonInvalidSpec        = "InvalidSpec"
+	ReasonAWSError           = "AWSError"
+	ReasonCertValidated      = "Validated"
+	ReasonCertPending        = "PendingValidation"
+	ReasonCertNotConfigured  = "NotConfigured"
+	ReasonCertFailed         = "CertificateFailed"
+	ReasonValidationFailed   = "ValidationFailed"
+	ReasonMissingParameters  = "MissingParameters"
+	ReasonMissingCertificate = "MissingCertificate"
 )
 
 // FinalizerName is the finalizer used by this operator.
