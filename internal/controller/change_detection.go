@@ -171,7 +171,8 @@ func specMatchesAWS(spec *cloudfrontv1alpha1.DistributionTenantSpec, aws *cfaws.
 	}
 
 	// Customizations
-	if !customizationsMatch(spec.Customizations, aws.Customizations) {
+	isManagedCert := spec.ManagedCertificateRequest != nil
+	if !customizationsMatch(spec.Customizations, aws.Customizations, isManagedCert) {
 		return false
 	}
 
@@ -179,9 +180,14 @@ func specMatchesAWS(spec *cloudfrontv1alpha1.DistributionTenantSpec, aws *cfaws.
 }
 
 // customizationsMatch compares spec-level customizations against the AWS state.
-func customizationsMatch(spec *cloudfrontv1alpha1.Customizations, aws *cfaws.CustomizationsInput) bool {
+func customizationsMatch(spec *cloudfrontv1alpha1.Customizations, aws *cfaws.CustomizationsInput, isManagedCert bool) bool {
 	if spec == nil && aws == nil {
 		return true
+	}
+	if isManagedCert && spec == nil {
+		// If using managed certificate, spec is nil but AWS may have a certificate ARN.
+		// In this case, we expect AWS to have a certificate ARN.
+		return aws.Certificate != nil
 	}
 	if spec == nil || aws == nil {
 		return false
@@ -208,13 +214,15 @@ func customizationsMatch(spec *cloudfrontv1alpha1.Customizations, aws *cfaws.Cus
 		}
 	}
 
-	// Certificate
-	if (spec.Certificate == nil) != (aws.Certificate == nil) {
-		return false
-	}
-	if spec.Certificate != nil {
-		if spec.Certificate.Arn != aws.Certificate.Arn {
+	// Certificate (if using a managed cert, ignore the certificate ARN in the AWS state)
+	if !isManagedCert {
+		if (spec.Certificate == nil) != (aws.Certificate == nil) {
 			return false
+		}
+		if spec.Certificate != nil {
+			if spec.Certificate.Arn != aws.Certificate.Arn {
+				return false
+			}
 		}
 	}
 
