@@ -212,6 +212,63 @@ var _ = Describe("DistributionTenant Controller", func() {
 			Expect(tenant.Status.ObservedGeneration).To(Equal(tenant.Generation))
 		})
 
+		It("should allow spec updates while previous deployment is still InProgress", func() {
+			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
+			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
+			// Add finalizer + create
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+
+			// Leave AWS status as InProgress (don't call SetTenantStatus("Deployed"))
+			// but set observedGeneration so the three-way diff works
+			tenant.Status.ObservedGeneration = tenant.Generation
+			Expect(k8sClient.Status().Update(ctx, tenant)).To(Succeed())
+
+			// Change the spec while InProgress
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+			tenant.Spec.Domains = append(tenant.Spec.Domains, cloudfrontv1alpha1.DomainSpec{Domain: "new.example.com"})
+			Expect(k8sClient.Update(ctx, tenant)).To(Succeed())
+
+			updateCountBefore := mockClient.UpdateCallCount
+
+			// Reconcile: should NOT block on InProgress, should push the update
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueShort))
+			Expect(mockClient.UpdateCallCount).To(Equal(updateCountBefore + 1))
+		})
+
+		It("should poll with Ready=False when InProgress and no spec changes", func() {
+			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
+			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
+			// Add finalizer + create
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+
+			// AWS is still InProgress, no spec changes
+			// Reconcile: should set Ready=False and poll
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueShort))
+
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+			readyCond := meta.FindStatusCondition(tenant.Status.Conditions, cloudfrontv1alpha1.ConditionTypeReady)
+			Expect(readyCond).NotTo(BeNil())
+			Expect(readyCond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(readyCond.Reason).To(Equal(cloudfrontv1alpha1.ReasonDeploying))
+
+			// Synced should still be True (spec matches what we sent to AWS)
+			syncedCond := meta.FindStatusCondition(tenant.Status.Conditions, cloudfrontv1alpha1.ConditionTypeSynced)
+			Expect(syncedCond).NotTo(BeNil())
+			Expect(syncedCond.Status).To(Equal(metav1.ConditionTrue))
+		})
+
 		It("should enforce spec when drift is detected (drift-policy=enforce)", func() {
 			// Default policy is enforce (set in BeforeEach)
 			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)

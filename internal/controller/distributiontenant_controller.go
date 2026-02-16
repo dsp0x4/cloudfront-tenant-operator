@@ -109,6 +109,11 @@ func (r *DistributionTenantReconciler) Reconcile(ctx context.Context, req ctrl.R
 }
 
 // reconcileDelete handles the three-step deletion flow: disable -> wait -> delete.
+//
+// Each step ends by returning a result, so each reconcile does at most ONE
+// write to the K8s API (either a status update or a metadata update to remove
+// the finalizer). This avoids resourceVersion conflicts from multiple writes
+// within the same reconciliation.
 func (r *DistributionTenantReconciler) reconcileDelete(ctx context.Context, tenant *cloudfrontv1alpha1.DistributionTenant) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -121,13 +126,6 @@ func (r *DistributionTenantReconciler) reconcileDelete(ctx context.Context, tena
 		log.Info("No AWS resource to delete, removing finalizer")
 		controllerutil.RemoveFinalizer(tenant, cloudfrontv1alpha1.FinalizerName)
 		return ctrl.Result{}, r.Update(ctx, tenant)
-	}
-
-	// Set Deleting condition
-	setCondition(tenant, cloudfrontv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
-		cloudfrontv1alpha1.ReasonDeleting, "Distribution tenant is being deleted")
-	if err := r.Status().Update(ctx, tenant); err != nil {
-		return ctrl.Result{}, err
 	}
 
 	// Fetch current AWS state
@@ -158,9 +156,12 @@ func (r *DistributionTenantReconciler) reconcileDelete(ctx context.Context, tena
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to disable distribution tenant: %w", err)
 		}
+		// Single status write: record that we're disabling.
 		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
 			cloudfrontv1alpha1.ReasonDisabling, "Distribution tenant is being disabled before deletion")
-		_ = r.Status().Update(ctx, tenant)
+		if err := r.Status().Update(ctx, tenant); err != nil {
+			return ctrl.Result{}, err
+		}
 		return ctrl.Result{RequeueAfter: requeueShort}, nil
 	}
 
@@ -168,6 +169,12 @@ func (r *DistributionTenantReconciler) reconcileDelete(ctx context.Context, tena
 	if awsTenant.Status != "Deployed" {
 		log.Info("Waiting for distribution tenant to finish deploying before deletion",
 			"id", tenant.Status.ID, "status", awsTenant.Status)
+		// Set Deleting condition if not already set (idempotent).
+		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
+			cloudfrontv1alpha1.ReasonDeleting, "Waiting for deployment to complete before deletion")
+		if err := r.Status().Update(ctx, tenant); err != nil {
+			return ctrl.Result{}, err
+		}
 		return ctrl.Result{RequeueAfter: requeueShort}, nil
 	}
 
@@ -195,8 +202,8 @@ func (r *DistributionTenantReconciler) reconcileCreate(ctx context.Context, tena
 	log.Info("Creating distribution tenant in AWS", "name", tenant.Spec.Name)
 
 	// Validate spec against distribution configuration before calling AWS
-	if res, handled := r.validateSpec(ctx, tenant); handled {
-		return res, nil
+	if res, err, handled := r.validateSpec(ctx, tenant); handled {
+		return res, err
 	}
 
 	input := buildCreateInput(tenant)
@@ -246,7 +253,9 @@ func (r *DistributionTenantReconciler) reconcileExisting(ctx context.Context, te
 		if err := r.Status().Update(ctx, tenant); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{Requeue: true}, nil
+		// Use a short RequeueAfter rather than the deprecated Requeue field.
+		// The next reconcile sees an empty ID and calls reconcileCreate.
+		return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
 	}
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to get distribution tenant: %w", err)
@@ -271,30 +280,28 @@ func (r *DistributionTenantReconciler) reconcileExisting(ctx context.Context, te
 		}
 	}
 
-	// If still deploying, wait
-	if awsTenant.Status == "InProgress" {
-		log.Info("Distribution tenant is still deploying", "id", tenant.Status.ID)
-		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
-			cloudfrontv1alpha1.ReasonDeploying, "Distribution tenant deployment is in progress")
-		updateCertificateCondition(tenant, certDetails)
-		if err := r.Status().Update(ctx, tenant); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{RequeueAfter: requeueShort}, nil
-	}
-
 	// Three-way diff: compare spec, last-reconciled generation, and AWS state.
+	// We do NOT gate on "InProgress" for updates: CloudFront uses ETags for
+	// optimistic concurrency, so submitting a new update while the previous
+	// one is still deploying is safe. This avoids unnecessary delays for spec
+	// changes, cert attachment, and drift correction. The delete flow has its
+	// own "InProgress" gate in reconcileDelete.
 	change := detectChanges(tenant, awsTenant)
 	log.V(1).Info("Change detection result", "id", tenant.Status.ID, "change", change.String(),
 		"generation", tenant.Generation, "observedGeneration", tenant.Status.ObservedGeneration)
 
 	switch change {
 	case changeSpec:
-		log.Info("Spec changed since last reconciliation, updating AWS",
-			"id", tenant.Status.ID, "generation", tenant.Generation)
+		if awsTenant.Status == "InProgress" {
+			log.Info("Submitting update while previous deployment is still in progress",
+				"id", tenant.Status.ID, "generation", tenant.Generation)
+		} else {
+			log.Info("Spec changed since last reconciliation, updating AWS",
+				"id", tenant.Status.ID, "generation", tenant.Generation)
+		}
 		// Validate spec before update
-		if res, handled := r.validateSpec(ctx, tenant); handled {
-			return res, nil
+		if res, err, handled := r.validateSpec(ctx, tenant); handled {
+			return res, err
 		}
 		return r.reconcileUpdate(ctx, tenant, awsTenant)
 
@@ -302,13 +309,58 @@ func (r *DistributionTenantReconciler) reconcileExisting(ctx context.Context, te
 		return r.handleDrift(ctx, tenant, awsTenant, log)
 	}
 
-	// changeNone: update drift check time and keep observedGeneration in sync
+	// changeNone: no spec change, no drift.
+	// If still deploying, set Ready=False and poll until deployed.
+	if awsTenant.Status == "InProgress" {
+		log.Info("Distribution tenant is still deploying", "id", tenant.Status.ID)
+		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
+			cloudfrontv1alpha1.ReasonDeploying, "Distribution tenant deployment is in progress")
+		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeSynced, metav1.ConditionTrue,
+			cloudfrontv1alpha1.ReasonInSync, "Spec is in sync with AWS")
+		updateCertificateCondition(tenant, certDetails)
+		tenant.Status.ObservedGeneration = tenant.Generation
+		if err := r.Status().Update(ctx, tenant); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: requeueShort}, nil
+	}
+
+	// Check managed certificate lifecycle BEFORE the status update to ensure
+	// each path does at most one K8s API write per reconcile.
+
+	// If the managed certificate is issued but not yet attached, write the
+	// certificate ARN into the spec. This is a spec update (not a status
+	// update), so we return immediately and let the next reconcile handle
+	// the status update with a fresh object.
+	if certDetails != nil && certDetails.CertificateStatus == "issued" && certDetails.CertificateArn != "" {
+		if !allDomainsActive(tenant) {
+			log.Info("Managed certificate issued, persisting ARN to spec for attachment",
+				"id", tenant.Status.ID, "certArn", certDetails.CertificateArn)
+			r.recordEvent(tenant, "Normal", "CertificateAttaching",
+				fmt.Sprintf("Managed certificate %s issued, attaching to domains", certDetails.CertificateArn))
+
+			if tenant.Spec.Customizations == nil {
+				tenant.Spec.Customizations = &cloudfrontv1alpha1.Customizations{}
+			}
+			tenant.Spec.Customizations.Certificate = &cloudfrontv1alpha1.CertificateCustomization{
+				Arn: certDetails.CertificateArn,
+			}
+			if err := r.Update(ctx, tenant); err != nil {
+				return ctrl.Result{}, fmt.Errorf("failed to persist managed certificate ARN to spec: %w", err)
+			}
+
+			// The spec update bumps the generation and triggers a new reconcile
+			// via the watch. That reconcile will detect changeSpec and push to AWS.
+			return ctrl.Result{}, nil
+		}
+	}
+
+	// Steady state: deployed and in sync.
 	now := metav1.Now()
 	tenant.Status.LastDriftCheckTime = &now
 	tenant.Status.DriftDetected = false
 	tenant.Status.ObservedGeneration = tenant.Generation
 
-	// Steady state: everything is in sync
 	setCondition(tenant, cloudfrontv1alpha1.ConditionTypeReady, metav1.ConditionTrue,
 		cloudfrontv1alpha1.ReasonDeployed, "Distribution tenant is deployed and serving traffic")
 	setCondition(tenant, cloudfrontv1alpha1.ConditionTypeSynced, metav1.ConditionTrue,
@@ -330,42 +382,7 @@ func (r *DistributionTenantReconciler) reconcileExisting(ctx context.Context, te
 	// If managed certificate is pending validation, requeue more frequently
 	// to detect cert issuance sooner and trigger attachment.
 	if certDetails != nil && certDetails.CertificateStatus == "pending-validation" {
-		log.Info("Managed certificate is pending validation, polling more frequently",
-			"id", tenant.Status.ID, "certArn", certDetails.CertificateArn)
 		return ctrl.Result{RequeueAfter: requeueShort}, nil
-	}
-
-	// If the managed certificate is issued but not yet attached, write the
-	// certificate ARN into the spec so that subsequent updates include it.
-	// Persisting this to the spec (rather than injecting it transiently)
-	// ensures the three-way diff sees it as a proper spec change and avoids
-	// false drift reports on every reconcile.
-	//
-	// We do NOT call reconcileUpdate inline here. The spec update bumps the
-	// generation and triggers a new reconcile via the watch. That reconcile
-	// will pick up a fresh object (avoiding resourceVersion conflicts) and
-	// the three-way diff will detect changeSpec → reconcileUpdate naturally.
-	if certDetails != nil && certDetails.CertificateStatus == "issued" && certDetails.CertificateArn != "" {
-		if !allDomainsActive(tenant) {
-			log.Info("Managed certificate issued, persisting ARN to spec for attachment",
-				"id", tenant.Status.ID, "certArn", certDetails.CertificateArn)
-			r.recordEvent(tenant, "Normal", "CertificateAttaching",
-				fmt.Sprintf("Managed certificate %s issued, attaching to domains", certDetails.CertificateArn))
-
-			if tenant.Spec.Customizations == nil {
-				tenant.Spec.Customizations = &cloudfrontv1alpha1.Customizations{}
-			}
-			tenant.Spec.Customizations.Certificate = &cloudfrontv1alpha1.CertificateCustomization{
-				Arn: certDetails.CertificateArn,
-			}
-			if err := r.Update(ctx, tenant); err != nil {
-				return ctrl.Result{}, fmt.Errorf("failed to persist managed certificate ARN to spec: %w", err)
-			}
-
-			// Return without explicit requeue: the spec update triggers a watch
-			// event, and the next reconcile will push the change to AWS.
-			return ctrl.Result{}, nil
-		}
 	}
 
 	return ctrl.Result{RequeueAfter: requeueLong}, nil
@@ -483,9 +500,14 @@ func (r *DistributionTenantReconciler) handleAWSError(ctx context.Context, tenan
 			reason, fmt.Sprintf("AWS %s failed: %v", operation, err))
 		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeSynced, metav1.ConditionFalse,
 			reason, fmt.Sprintf("AWS %s failed: %v", operation, err))
-		_ = r.Status().Update(ctx, tenant)
+		if statusErr := r.Status().Update(ctx, tenant); statusErr != nil {
+			// If we can't persist the terminal error condition, return the
+			// status update error so the reconcile retries with a fresh object.
+			log.Error(statusErr, "Failed to update status after terminal AWS error")
+			return ctrl.Result{}, statusErr
+		}
 		r.recordEvent(tenant, "Warning", reason, fmt.Sprintf("Terminal error during %s: %v", operation, err))
-		// Don't return error: terminal errors should not be requeued.
+		// Don't return the AWS error: terminal errors should not be requeued.
 		// The periodic resync (requeueLong) will re-check later.
 		return ctrl.Result{RequeueAfter: requeueLong}, nil
 	}
@@ -502,10 +524,12 @@ func (r *DistributionTenantReconciler) handleAWSError(ctx context.Context, tenan
 }
 
 // validateSpec checks the tenant's spec against the parent distribution
-// configuration. It returns (result, handled) where handled=true means
-// a validation error was found and the caller should return the result
-// without an error (terminal validation failures are non-retryable).
-func (r *DistributionTenantReconciler) validateSpec(ctx context.Context, tenant *cloudfrontv1alpha1.DistributionTenant) (ctrl.Result, bool) { //nolint:unparam
+// configuration. It returns (result, err, handled) where handled=true means
+// a validation error was found and the caller should return the result.
+// err is non-nil only when the status update to persist the validation
+// failure fails — in that case the caller should return the error so the
+// reconcile retries with a fresh object.
+func (r *DistributionTenantReconciler) validateSpec(ctx context.Context, tenant *cloudfrontv1alpha1.DistributionTenant) (ctrl.Result, error, bool) {
 	log := logf.FromContext(ctx)
 
 	distInfo, err := r.CFClient.GetDistributionInfo(ctx, tenant.Spec.DistributionId)
@@ -514,7 +538,7 @@ func (r *DistributionTenantReconciler) validateSpec(ctx context.Context, tenant 
 		// request proceed -- the AWS API will catch any real errors.
 		log.Error(err, "Failed to fetch distribution info for validation; proceeding without local validation",
 			"distributionId", tenant.Spec.DistributionId)
-		return ctrl.Result{}, false
+		return ctrl.Result{}, nil, false
 	}
 
 	var validationErrors []string
@@ -580,12 +604,15 @@ func (r *DistributionTenantReconciler) validateSpec(ctx context.Context, tenant 
 			cloudfrontv1alpha1.ReasonValidationFailed, msg)
 		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeSynced, metav1.ConditionFalse,
 			cloudfrontv1alpha1.ReasonValidationFailed, msg)
-		_ = r.Status().Update(ctx, tenant)
+		if statusErr := r.Status().Update(ctx, tenant); statusErr != nil {
+			log.Error(statusErr, "Failed to update status after validation failure")
+			return ctrl.Result{}, statusErr, true
+		}
 		// Don't requeue aggressively; the user needs to fix the spec.
-		return ctrl.Result{RequeueAfter: requeueLong}, true
+		return ctrl.Result{RequeueAfter: requeueLong}, nil, true
 	}
 
-	return ctrl.Result{}, false
+	return ctrl.Result{}, nil, false
 }
 
 // updateCertificateCondition sets the CertificateReady condition based on
