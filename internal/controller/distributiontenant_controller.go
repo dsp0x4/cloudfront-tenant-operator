@@ -335,15 +335,28 @@ func (r *DistributionTenantReconciler) reconcileExisting(ctx context.Context, te
 		return ctrl.Result{RequeueAfter: requeueShort}, nil
 	}
 
-	// If the managed certificate is issued but the tenant's customizations
-	// don't yet include the certificate (domains may be inactive), trigger an
-	// update to nudge CloudFront into attaching the cert.
+	// If the managed certificate is issued but not yet attached, write the
+	// certificate ARN into the spec so that subsequent updates include it.
+	// Persisting this to the spec (rather than injecting it transiently)
+	// ensures the three-way diff sees it as a proper spec change and avoids
+	// false drift reports on every reconcile.
 	if certDetails != nil && certDetails.CertificateStatus == "issued" && certDetails.CertificateArn != "" {
 		if !allDomainsActive(tenant) {
-			log.Info("Managed certificate is issued but domains are not yet active, triggering update to attach certificate",
+			log.Info("Managed certificate issued, attaching to tenant",
 				"id", tenant.Status.ID, "certArn", certDetails.CertificateArn)
-			r.recordEvent(tenant, "Normal", "CertificateIssued",
-				fmt.Sprintf("Managed certificate %s issued, triggering attachment", certDetails.CertificateArn))
+			r.recordEvent(tenant, "Normal", "CertificateAttaching",
+				fmt.Sprintf("Managed certificate %s issued, attaching to domains", certDetails.CertificateArn))
+
+			if tenant.Spec.Customizations == nil {
+				tenant.Spec.Customizations = &cloudfrontv1alpha1.Customizations{}
+			}
+			tenant.Spec.Customizations.Certificate = &cloudfrontv1alpha1.CertificateCustomization{
+				Arn: certDetails.CertificateArn,
+			}
+			if err := r.Update(ctx, tenant); err != nil {
+				return ctrl.Result{}, fmt.Errorf("failed to persist managed certificate ARN to spec: %w", err)
+			}
+
 			return r.reconcileUpdate(ctx, tenant, awsTenant)
 		}
 	}
@@ -355,22 +368,6 @@ func (r *DistributionTenantReconciler) reconcileExisting(ctx context.Context, te
 func (r *DistributionTenantReconciler) reconcileUpdate(ctx context.Context, tenant *cloudfrontv1alpha1.DistributionTenant, awsTenant *cfaws.DistributionTenantOutput) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	log.Info("Updating distribution tenant in AWS", "id", tenant.Status.ID)
-
-	// TDOO: move to function
-	// Handle managed certificate lifecycle
-	if meta.IsStatusConditionFalse(tenant.Status.Conditions, cloudfrontv1alpha1.ConditionTypeCertificateReady) && tenant.Status.ManagedCertificateStatus == "issued" {
-		certCondition := meta.FindStatusCondition(tenant.Status.Conditions, cloudfrontv1alpha1.ConditionTypeCertificateReady)
-		if certCondition != nil {
-			if certCondition.Reason == cloudfrontv1alpha1.ReasonCertValidated {
-				if tenant.Spec.Customizations == nil {
-					tenant.Spec.Customizations = &cloudfrontv1alpha1.Customizations{}
-				}
-				tenant.Spec.Customizations.Certificate = &cloudfrontv1alpha1.CertificateCustomization{
-					Arn: tenant.Status.CertificateArn,
-				}
-			}
-		}
-	}
 
 	input := buildUpdateInput(tenant, awsTenant.ETag)
 	out, err := r.CFClient.UpdateDistributionTenant(ctx, input)
@@ -604,8 +601,8 @@ func updateCertificateCondition(tenant *cloudfrontv1alpha1.DistributionTenant, c
 					fmt.Sprintf("Managed certificate %s is validated and active", certDetails.CertificateArn))
 			} else {
 				setCondition(tenant, cloudfrontv1alpha1.ConditionTypeCertificateReady, metav1.ConditionFalse,
-					cloudfrontv1alpha1.ReasonCertValidated,
-					fmt.Sprintf("Managed certificate %s is issued but not yet attached to all domains", certDetails.CertificateArn))
+					cloudfrontv1alpha1.ReasonCertAttaching,
+					fmt.Sprintf("Managed certificate %s is issued, attaching to domains", certDetails.CertificateArn))
 			}
 		case "pending-validation":
 			msg := "Managed certificate validation is pending"

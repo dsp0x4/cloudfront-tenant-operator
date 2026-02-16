@@ -171,82 +171,79 @@ func specMatchesAWS(spec *cloudfrontv1alpha1.DistributionTenantSpec, aws *cfaws.
 	}
 
 	// Customizations
-	isManagedCert := spec.ManagedCertificateRequest != nil
-	if !customizationsMatch(spec.Customizations, aws.Customizations, isManagedCert) {
-		return false
-	}
-
-	return true
+	return customizationsMatch(spec.Customizations, aws.Customizations)
 }
 
 // customizationsMatch compares spec-level customizations against the AWS state.
-func customizationsMatch(spec *cloudfrontv1alpha1.Customizations, aws *cfaws.CustomizationsInput, isManagedCert bool) bool {
+func customizationsMatch(spec *cloudfrontv1alpha1.Customizations, aws *cfaws.CustomizationsInput) bool {
 	if spec == nil && aws == nil {
 		return true
-	}
-	if isManagedCert && spec == nil {
-		// If using managed certificate, spec is nil but AWS may have a certificate ARN.
-		// In this case, we expect AWS to have a certificate ARN.
-		return aws.Certificate != nil
 	}
 	if spec == nil || aws == nil {
 		return false
 	}
 
-	// WebACL
-	if (spec.WebAcl == nil) != (aws.WebAcl == nil) {
+	if !webAclMatch(spec.WebAcl, aws.WebAcl) {
 		return false
 	}
-	if spec.WebAcl != nil {
-		if spec.WebAcl.Action != aws.WebAcl.Action {
-			return false
-		}
-		specArn := ""
-		if spec.WebAcl.Arn != nil {
-			specArn = *spec.WebAcl.Arn
-		}
-		awsArn := ""
-		if aws.WebAcl.Arn != nil {
-			awsArn = *aws.WebAcl.Arn
-		}
-		if specArn != awsArn {
-			return false
-		}
-	}
-
-	// Certificate (if using a managed cert, ignore the certificate ARN in the AWS state)
-	if !isManagedCert {
-		if (spec.Certificate == nil) != (aws.Certificate == nil) {
-			return false
-		}
-		if spec.Certificate != nil {
-			if spec.Certificate.Arn != aws.Certificate.Arn {
-				return false
-			}
-		}
-	}
-
-	// Geo restrictions
-	if (spec.GeoRestrictions == nil) != (aws.GeoRestrictions == nil) {
+	if !certificateMatch(spec.Certificate, aws.Certificate) {
 		return false
 	}
-	if spec.GeoRestrictions != nil {
-		if spec.GeoRestrictions.RestrictionType != aws.GeoRestrictions.RestrictionType {
+	return geoRestrictionsMatch(spec.GeoRestrictions, aws.GeoRestrictions)
+}
+
+func webAclMatch(spec *cloudfrontv1alpha1.WebAclCustomization, aws *cfaws.WebAclCustomizationInput) bool {
+	if (spec == nil) != (aws == nil) {
+		return false
+	}
+	if spec == nil {
+		return true
+	}
+	if spec.Action != aws.Action {
+		return false
+	}
+	specArn := ""
+	if spec.Arn != nil {
+		specArn = *spec.Arn
+	}
+	awsArn := ""
+	if aws.Arn != nil {
+		awsArn = *aws.Arn
+	}
+	return specArn == awsArn
+}
+
+func certificateMatch(spec *cloudfrontv1alpha1.CertificateCustomization, aws *cfaws.CertificateCustomizationInput) bool {
+	if (spec == nil) != (aws == nil) {
+		return false
+	}
+	if spec == nil {
+		return true
+	}
+	return spec.Arn == aws.Arn
+}
+
+func geoRestrictionsMatch(spec *cloudfrontv1alpha1.GeoRestrictionCustomization, aws *cfaws.GeoRestrictionCustomizationInput) bool {
+	if (spec == nil) != (aws == nil) {
+		return false
+	}
+	if spec == nil {
+		return true
+	}
+	if spec.RestrictionType != aws.RestrictionType {
+		return false
+	}
+	if len(spec.Locations) != len(aws.Locations) {
+		return false
+	}
+	specLocs := make(map[string]bool, len(spec.Locations))
+	for _, l := range spec.Locations {
+		specLocs[l] = true
+	}
+	for _, l := range aws.Locations {
+		if !specLocs[l] {
 			return false
-		}
-		if len(spec.GeoRestrictions.Locations) != len(aws.GeoRestrictions.Locations) {
-			return false
-		}
-		specLocs := make(map[string]bool, len(spec.GeoRestrictions.Locations))
-		for _, l := range spec.GeoRestrictions.Locations {
-			specLocs[l] = true
-		}
-		for _, l := range aws.GeoRestrictions.Locations {
-			if !specLocs[l] {
-				return false
-			}
 		}
 	}
-
 	return true
 }
