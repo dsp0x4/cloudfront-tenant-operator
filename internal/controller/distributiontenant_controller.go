@@ -310,28 +310,12 @@ func (r *DistributionTenantReconciler) reconcileExisting(ctx context.Context, te
 	}
 
 	// changeNone: no spec change, no drift.
-	// If still deploying, set Ready=False and poll until deployed.
-	if awsTenant.Status == "InProgress" {
-		log.Info("Distribution tenant is still deploying", "id", tenant.Status.ID)
-		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
-			cloudfrontv1alpha1.ReasonDeploying, "Distribution tenant deployment is in progress")
-		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeSynced, metav1.ConditionTrue,
-			cloudfrontv1alpha1.ReasonInSync, "Spec is in sync with AWS")
-		updateCertificateCondition(tenant, certDetails)
-		tenant.Status.ObservedGeneration = tenant.Generation
-		if err := r.Status().Update(ctx, tenant); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{RequeueAfter: requeueShort}, nil
-	}
 
-	// Check managed certificate lifecycle BEFORE the status update to ensure
-	// each path does at most one K8s API write per reconcile.
-
-	// If the managed certificate is issued but not yet attached, write the
-	// certificate ARN into the spec. This is a spec update (not a status
-	// update), so we return immediately and let the next reconcile handle
-	// the status update with a fresh object.
+	// Check managed certificate lifecycle BEFORE any status update to ensure
+	// each path does at most one K8s API write per reconcile. This must run
+	// before the InProgress gate: the cert can be issued while a previous
+	// deployment is still in progress, and we want to persist the ARN
+	// immediately so the next reconcile pushes it to AWS.
 	if certDetails != nil && certDetails.CertificateStatus == "issued" && certDetails.CertificateArn != "" {
 		if !allDomainsActive(tenant) {
 			log.Info("Managed certificate issued, persisting ARN to spec for attachment",
@@ -350,9 +334,25 @@ func (r *DistributionTenantReconciler) reconcileExisting(ctx context.Context, te
 			}
 
 			// The spec update bumps the generation and triggers a new reconcile
-			// via the watch. That reconcile will detect changeSpec and push to AWS.
+			// via the watch. That reconcile will detect changeSpec and push to AWS
+			// (even if the tenant is still InProgress — that's handled above).
 			return ctrl.Result{}, nil
 		}
+	}
+
+	// If still deploying, set Ready=False and poll until deployed.
+	if awsTenant.Status == "InProgress" {
+		log.Info("Distribution tenant is still deploying", "id", tenant.Status.ID)
+		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
+			cloudfrontv1alpha1.ReasonDeploying, "Distribution tenant deployment is in progress")
+		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeSynced, metav1.ConditionTrue,
+			cloudfrontv1alpha1.ReasonInSync, "Spec is in sync with AWS")
+		updateCertificateCondition(tenant, certDetails)
+		tenant.Status.ObservedGeneration = tenant.Generation
+		if err := r.Status().Update(ctx, tenant); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: requeueShort}, nil
 	}
 
 	// Steady state: deployed and in sync.
