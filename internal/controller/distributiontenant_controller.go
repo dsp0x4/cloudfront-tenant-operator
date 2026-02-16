@@ -153,7 +153,7 @@ func (r *DistributionTenantReconciler) reconcileDelete(ctx context.Context, tena
 		log.Info("Disabling distribution tenant before deletion", "id", tenant.Status.ID)
 		r.recordEvent(tenant, "Normal", "Disabling", "Disabling distribution tenant before deletion")
 		enabled := false
-		_, err := r.CFClient.UpdateDistributionTenant(ctx, &cfaws.UpdateDistributionTenantInput{
+		out, err := r.CFClient.UpdateDistributionTenant(ctx, &cfaws.UpdateDistributionTenantInput{
 			ID:             tenant.Status.ID,
 			DistributionId: tenant.Spec.DistributionId,
 			IfMatch:        awsTenant.ETag,
@@ -163,7 +163,10 @@ func (r *DistributionTenantReconciler) reconcileDelete(ctx context.Context, tena
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to disable distribution tenant: %w", err)
 		}
-		// Single status write: record that we're disabling.
+		// Update cached ETag and status from the disable response so the
+		// status subresource reflects the real AWS state (e.g. InProgress).
+		tenant.Status.ETag = out.ETag
+		tenant.Status.DistributionTenantStatus = out.Status
 		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
 			cloudfrontv1alpha1.ReasonDisabling, "Distribution tenant is being disabled before deletion")
 		if err := r.Status().Update(ctx, tenant); err != nil {
@@ -176,7 +179,9 @@ func (r *DistributionTenantReconciler) reconcileDelete(ctx context.Context, tena
 	if awsTenant.Status != "Deployed" {
 		log.Info("Waiting for distribution tenant to finish deploying before deletion",
 			"id", tenant.Status.ID, "status", awsTenant.Status)
-		// Set Deleting condition if not already set (idempotent).
+		// Keep distributionTenantStatus in sync with what AWS reports.
+		tenant.Status.DistributionTenantStatus = awsTenant.Status
+		tenant.Status.ETag = awsTenant.ETag
 		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
 			cloudfrontv1alpha1.ReasonDeleting, "Waiting for deployment to complete before deletion")
 		if err := r.Status().Update(ctx, tenant); err != nil {
