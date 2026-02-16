@@ -312,6 +312,7 @@ const (
 	ReasonInvalidSpec        = "InvalidSpec"
 	ReasonAWSError           = "AWSError"
 	ReasonCertValidated      = "Validated"
+	ReasonCertAttaching      = "Attaching"
 	ReasonCertPending        = "PendingValidation"
 	ReasonCertNotConfigured  = "NotConfigured"
 	ReasonCertFailed         = "CertificateFailed"

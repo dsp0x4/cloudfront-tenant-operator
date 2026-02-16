@@ -345,6 +345,50 @@ func TestSpecMatchesAWS(t *testing.T) {
 			},
 			expected: true,
 		},
+		{
+			name: "managed cert: spec has cert ARN persisted, AWS matches",
+			spec: cloudfrontv1alpha1.DistributionTenantSpec{
+				DistributionId: "E123",
+				Domains:        []cloudfrontv1alpha1.DomainSpec{{Domain: "a.com"}},
+				Enabled:        boolPtr(true),
+				ManagedCertificateRequest: &cloudfrontv1alpha1.ManagedCertificateRequest{
+					ValidationTokenHost: "cloudfront",
+				},
+				Customizations: &cloudfrontv1alpha1.Customizations{
+					Certificate: &cloudfrontv1alpha1.CertificateCustomization{
+						Arn: "arn:aws:acm:us-east-1:123:certificate/managed",
+					},
+				},
+			},
+			aws: cfaws.DistributionTenantOutput{
+				DistributionId: "E123",
+				Domains:        []cfaws.DomainResultOutput{{Domain: "a.com"}},
+				Enabled:        true,
+				Customizations: &cfaws.CustomizationsInput{
+					Certificate: &cfaws.CertificateCustomizationInput{
+						Arn: "arn:aws:acm:us-east-1:123:certificate/managed",
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "managed cert: spec has no cert yet, AWS has no cert either (pre-attach)",
+			spec: cloudfrontv1alpha1.DistributionTenantSpec{
+				DistributionId: "E123",
+				Domains:        []cloudfrontv1alpha1.DomainSpec{{Domain: "a.com"}},
+				Enabled:        boolPtr(true),
+				ManagedCertificateRequest: &cloudfrontv1alpha1.ManagedCertificateRequest{
+					ValidationTokenHost: "cloudfront",
+				},
+			},
+			aws: cfaws.DistributionTenantOutput{
+				DistributionId: "E123",
+				Domains:        []cfaws.DomainResultOutput{{Domain: "a.com"}},
+				Enabled:        true,
+			},
+			expected: true,
+		},
 	}
 
 	for _, tt := range tests {
