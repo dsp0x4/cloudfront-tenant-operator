@@ -1,6 +1,6 @@
 # cloudfront-tenant-operator
 
-A Kubernetes operator for managing [CloudFront Distribution Tenants](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/distribution-tenants.html) -- the new AWS CloudFront SaaS Manager feature for multi-tenant content delivery.
+A Kubernetes operator for managing [CloudFront Distribution Tenants](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/distribution-tenants.html) -- the AWS CloudFront multi-tenant content delivery feature.
 
 ## What It Does
 
@@ -8,10 +8,14 @@ The operator manages `DistributionTenant` custom resources that map 1:1 to AWS C
 
 - **Full lifecycle management**: Create, update, and delete distribution tenants via the AWS API
 - **Disable-before-delete**: Automatically disables tenants before deletion (required by AWS)
-- **ETag-based concurrency**: Fetches current state before every update to prevent conflicts
-- **Error classification**: Distinguishes terminal errors (domain conflicts, permission issues) from retryable ones (throttling, network errors)
-- **Status conditions**: Reports `Ready` and `Synced` conditions following Kubernetes conventions
-- **Finalizer-based cleanup**: Ensures AWS resources are properly deleted before the K8s object is removed
+- **ETag-based concurrency**: Uses optimistic concurrency control on every update to prevent conflicts
+- **Drift detection**: Three-way diff (spec vs observed generation vs AWS state) distinguishes user-initiated changes from external drift, with configurable policy (`enforce`, `report`, `suspend`)
+- **Managed certificate lifecycle**: Tracks CloudFront-managed ACM certificates through validation, issuance, and automatic attachment to the tenant
+- **Pre-flight validation**: Validates the resource name, certificate coverage, and required parameters against the parent distribution before calling AWS
+- **Error classification**: Distinguishes terminal errors (domain conflicts, permission issues) from retryable ones (throttling, network errors) with detailed AWS error messages
+- **Status conditions**: Reports `Ready`, `Synced`, and `CertificateReady` conditions following Kubernetes conventions
+- **Prometheus metrics**: Exposes reconciliation duration, error counts, drift detections, and AWS API call latency
+- **Finalizer-based cleanup**: Ensures AWS resources are properly disabled and deleted before the K8s object is removed
 
 ## Prerequisites
 
@@ -33,7 +37,9 @@ The operator manages `DistributionTenant` custom resources that map 1:1 to AWS C
         "cloudfront:CreateDistributionTenant",
         "cloudfront:GetDistributionTenant",
         "cloudfront:UpdateDistributionTenant",
-        "cloudfront:DeleteDistributionTenant"
+        "cloudfront:DeleteDistributionTenant",
+        "cloudfront:GetDistribution",
+        "cloudfront:GetManagedCertificateDetails"
       ],
       "Resource": "*"
     }
@@ -77,6 +83,8 @@ make deploy IMG=<your-registry>/cloudfront-tenant-operator:latest
 
 ### Create a Distribution Tenant
 
+The Kubernetes resource name (`metadata.name`) is used as the CloudFront tenant name. It must be 3-128 characters, start and end with a lowercase alphanumeric, and contain only lowercase alphanumerics, dots, and hyphens.
+
 ```yaml
 apiVersion: cloudfront-tenant-operator.io/v1alpha1
 kind: DistributionTenant
@@ -84,7 +92,6 @@ metadata:
   name: my-tenant
 spec:
   distributionId: "E1XNX8R2GOAABC"     # Your multi-tenant distribution ID
-  name: "my-tenant"
   domains:
     - domain: "my-tenant.example.com"
 ```
@@ -110,15 +117,21 @@ The operator reports standard Kubernetes conditions:
 | `Ready=True` | Tenant is deployed and serving traffic |
 | `Ready=False, reason=Deploying` | AWS deployment in progress |
 | `Ready=False, reason=DomainConflict` | Domain already used by another distribution (terminal) |
+| `Ready=False, reason=ValidationFailed` | Spec failed pre-flight validation (name, cert, parameters) |
 | `Synced=True` | K8s spec matches AWS state |
+| `Synced=False, reason=DriftDetected` | AWS state was modified outside the operator |
+| `CertificateReady=True` | Managed certificate validated and attached |
+| `CertificateReady=False, reason=PendingValidation` | Certificate is awaiting DNS validation |
 
-### Uninstall
+## Controller Flags
 
-```sh
-kubectl delete -k config/samples/   # Delete CRs
-make uninstall                       # Delete CRDs
-make undeploy                        # Remove operator
-```
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--drift-policy` | `enforce` | How to handle external drift: `enforce` (overwrite AWS), `report` (log + set conditions), `suspend` (skip drift checks) |
+| `--aws-region` | *(SDK default)* | AWS region for CloudFront API calls |
+| `--metrics-bind-address` | `0` | Address for the metrics endpoint (`0` = disabled) |
+| `--health-probe-bind-address` | `:8081` | Address for health probes |
+| `--leader-elect` | `false` | Enable leader election for HA deployments |
 
 ## CRD Reference
 
@@ -129,7 +142,6 @@ See the full [CRD spec](api/v1alpha1/distributiontenant_types.go) and [example C
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `distributionId` | string | Yes | ID of the parent multi-tenant distribution |
-| `name` | string | Yes | Friendly name (immutable after creation) |
 | `domains` | array | Yes | List of domains to associate |
 | `enabled` | bool | No | Whether to serve traffic (default: true) |
 | `connectionGroupId` | string | No | Connection group ID |
@@ -137,40 +149,74 @@ See the full [CRD spec](api/v1alpha1/distributiontenant_types.go) and [example C
 | `customizations` | object | No | WAF, certificate, and geo restriction overrides |
 | `managedCertificateRequest` | object | No | CloudFront-managed ACM certificate configuration |
 | `tags` | array | No | AWS resource tags |
+| `dns` | object | No | DNS record management config (Phase 4, not yet implemented) |
+
+### Status Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | AWS-assigned distribution tenant ID |
+| `arn` | string | Amazon Resource Name |
+| `eTag` | string | Version identifier for optimistic concurrency |
+| `distributionTenantStatus` | string | AWS deployment status (`InProgress`, `Deployed`) |
+| `observedGeneration` | int64 | Last generation successfully reconciled (for drift detection) |
+| `certificateArn` | string | ARN of the associated ACM certificate |
+| `managedCertificateStatus` | string | Managed cert lifecycle status (`pending-validation`, `issued`, etc.) |
+| `driftDetected` | bool | Whether external drift was detected |
+| `lastDriftCheckTime` | time | Timestamp of the last drift check |
+| `domainResults` | array | Per-domain status from AWS (`active`/`inactive`) |
+| `conditions` | array | Standard Kubernetes conditions (`Ready`, `Synced`, `CertificateReady`) |
 
 ## Architecture
 
 ```
-cmd/main.go                          # Entrypoint, wires AWS client + controller
-api/v1alpha1/                        # CRD type definitions
-internal/controller/                 # Reconciliation logic
+cmd/main.go                              # Entrypoint, wires AWS client + controller + flags
+api/v1alpha1/                            # CRD type definitions
+internal/controller/
+  distributiontenant_controller.go       # Reconciliation logic
+  change_detection.go                    # Three-way diff and drift policy
 internal/aws/
-  client.go                          # CloudFrontClient interface
-  cloudfront.go                      # Real AWS SDK implementation
-  errors.go                          # Error classification (terminal vs retryable)
-  mock.go                            # Mock for testing
+  client.go                              # CloudFrontClient interface
+  cloudfront.go                          # Real AWS SDK implementation
+  errors.go                              # Error classification (terminal vs retryable)
+  mock.go                                # Mock for testing
+internal/metrics/
+  metrics.go                             # Prometheus metric definitions
 ```
 
 ### Reconciliation Flow
 
-1. **Create**: If no AWS ID in status, call `CreateDistributionTenant`
-2. **Wait**: Requeue until AWS status transitions from `InProgress` to `Deployed`
-3. **Steady state**: Compare spec vs AWS state, update if changed
-4. **Delete**: Disable tenant -> wait for `Deployed` -> delete from AWS -> remove finalizer
+1. **Create**: Validate spec (name, cert coverage, required params) -> call `CreateDistributionTenant`
+2. **Poll**: Requeue every 30s until AWS status transitions from `InProgress` to `Deployed`
+3. **Steady state**: Three-way diff compares spec, observed generation, and AWS state
+   - **Spec change** (generation bumped): validate and push update to AWS
+   - **Drift** (generation matches, AWS differs): apply configured drift policy
+   - **No change**: update conditions, check managed cert lifecycle, requeue every 5min
+4. **Managed cert**: Track `pending-validation` -> `issued` -> auto-attach ARN to spec -> push update
+5. **Delete**: Disable tenant -> wait for `Deployed` -> delete from AWS -> remove finalizer
 
 ### Error Handling
 
-- **Terminal errors** (`CNAMEAlreadyExists`, `AccessDenied`, `InvalidArgument`): Set condition, stop retrying
+- **Terminal errors** (`CNAMEAlreadyExists`, `AccessDenied`, `InvalidArgument`): Set condition, don't retry, requeue after 5min
 - **Retryable errors** (`Throttling`, `PreconditionFailed`, 5xx): Requeue with backoff
+- **ETag mismatch**: Re-fetch and retry via rate limiter (no error metric increment)
+- **Validation errors**: Set condition with specific message, requeue after 5min (user must fix spec)
+
+### ResourceVersion Safety
+
+The controller ensures at most one Kubernetes API write (spec update or status update) per reconcile loop to prevent `resourceVersion` conflicts. Operations that require multiple writes (e.g., cert attachment followed by status update) are split across reconcile cycles using watch events and short requeues.
 
 ## Development
 
 ```sh
-# Run tests
+# Run tests (unit + envtest)
 make test
 
 # Run linter
 make lint
+
+# Auto-fix lint issues
+make lint-fix
 
 # Regenerate CRD manifests and deep copy
 make manifests generate
@@ -178,9 +224,11 @@ make manifests generate
 
 ## Roadmap
 
-- **Phase 2**: Certificate readiness tracking, drift detection, Prometheus metrics
-- **Phase 3**: Helm chart, validation webhooks, CI/CD, GoReleaser
-- **Phase 4**: External tenant sources (database), automatic DNS management, dry-run mode
+- Validation webhooks for immediate feedback on invalid specs
+- Helm chart distribution
+- External tenant sources (database-driven tenant provisioning)
+- Automatic DNS record management (Route53 CNAME creation)
+- Dry-run mode for safe change previews
 
 ## License
 
