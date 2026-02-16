@@ -28,14 +28,6 @@ type DistributionTenantSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	DistributionId string `json:"distributionId"`
 
-	// name is a friendly identifier for the distribution tenant, unique within your AWS account.
-	// This field is immutable after creation.
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=3
-	// +kubebuilder:validation:MaxLength=128
-	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9][a-zA-Z0-9\.\-]{1,126}[a-zA-Z0-9]$`
-	Name string `json:"name"`
-
 	// domains is the list of domains associated with the distribution tenant.
 	// At least one domain is required.
 	// +kubebuilder:validation:Required

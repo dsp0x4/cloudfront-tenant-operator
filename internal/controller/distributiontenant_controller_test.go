@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -654,6 +655,91 @@ var _ = Describe("DistributionTenant Controller", func() {
 			Expect(mockClient.CreateCallCount).To(Equal(1))
 		})
 
+		It("should reject creation when resource name is too short", func() {
+			shortName := "ab"
+			shortNN := types.NamespacedName{Name: shortName, Namespace: tenantNamespace}
+			tenant := newTestTenant(shortName, tenantNamespace, distributionId)
+			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
+			// Add finalizer
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: shortNN})
+
+			// Attempt create: should fail name validation
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: shortNN})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueLong))
+
+			Expect(k8sClient.Get(ctx, shortNN, tenant)).To(Succeed())
+			readyCond := meta.FindStatusCondition(tenant.Status.Conditions, cloudfrontv1alpha1.ConditionTypeReady)
+			Expect(readyCond).NotTo(BeNil())
+			Expect(readyCond.Reason).To(Equal(cloudfrontv1alpha1.ReasonValidationFailed))
+			Expect(readyCond.Message).To(ContainSubstring("resource name"))
+			Expect(mockClient.CreateCallCount).To(Equal(0))
+		})
+
+		It("should reject creation when resource name exceeds 128 characters", func() {
+			// 129 chars: "a" + 127 * "b" + "c" — valid for K8s (max 253) but too long for CloudFront (max 128)
+			longName := "a" + strings.Repeat("b", 127) + "c"
+			longNN := types.NamespacedName{Name: longName, Namespace: tenantNamespace}
+			tenant := newTestTenant(longName, tenantNamespace, distributionId)
+			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
+			// Add finalizer
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: longNN})
+
+			// Attempt create: should fail name validation
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: longNN})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueLong))
+
+			Expect(k8sClient.Get(ctx, longNN, tenant)).To(Succeed())
+			readyCond := meta.FindStatusCondition(tenant.Status.Conditions, cloudfrontv1alpha1.ConditionTypeReady)
+			Expect(readyCond).NotTo(BeNil())
+			Expect(readyCond.Reason).To(Equal(cloudfrontv1alpha1.ReasonValidationFailed))
+			Expect(readyCond.Message).To(ContainSubstring("resource name"))
+			Expect(mockClient.CreateCallCount).To(Equal(0))
+		})
+
+		It("should accept creation when resource name is valid", func() {
+			validName := "my-tenant.prod"
+			validNN := types.NamespacedName{Name: validName, Namespace: tenantNamespace}
+			tenant := newTestTenant(validName, tenantNamespace, distributionId)
+			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
+			// Add finalizer
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: validNN})
+
+			// Create: should pass validation
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: validNN})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueShort))
+			Expect(mockClient.CreateCallCount).To(Equal(1))
+		})
+
+		It("should reject name validation even when distribution info fetch fails", func() {
+			mockClient.GetDistributionInfoError = cfaws.ErrAccessDenied
+
+			shortName := "xy"
+			shortNN := types.NamespacedName{Name: shortName, Namespace: tenantNamespace}
+			tenant := newTestTenant(shortName, tenantNamespace, distributionId)
+			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
+			// Add finalizer
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: shortNN})
+
+			// Attempt create: should still fail name validation
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: shortNN})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueLong))
+
+			Expect(k8sClient.Get(ctx, shortNN, tenant)).To(Succeed())
+			readyCond := meta.FindStatusCondition(tenant.Status.Conditions, cloudfrontv1alpha1.ConditionTypeReady)
+			Expect(readyCond).NotTo(BeNil())
+			Expect(readyCond.Reason).To(Equal(cloudfrontv1alpha1.ReasonValidationFailed))
+			Expect(readyCond.Message).To(ContainSubstring("resource name"))
+			Expect(mockClient.CreateCallCount).To(Equal(0))
+		})
+
 		It("should proceed with creation if distribution info fetch fails (graceful degradation)", func() {
 			// Make GetDistributionInfo return an error
 			mockClient.GetDistributionInfoError = cfaws.ErrAccessDenied
@@ -822,7 +908,6 @@ func newTestTenant(name, namespace, distributionId string) *cloudfrontv1alpha1.D
 		},
 		Spec: cloudfrontv1alpha1.DistributionTenantSpec{
 			DistributionId: distributionId,
-			Name:           name,
 			Domains: []cloudfrontv1alpha1.DomainSpec{
 				{Domain: "example.com"},
 			},

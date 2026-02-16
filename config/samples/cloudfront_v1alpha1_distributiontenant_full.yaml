@@ -10,7 +10,6 @@ metadata:
 spec:
   # Required fields
   distributionId: "E1XNX8R2GOAABC"
-  name: "my-tenant-full"
   domains:
     - domain: "full.example.com"
     - domain: "www.full.example.com"

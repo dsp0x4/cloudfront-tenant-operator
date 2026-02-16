@@ -9,6 +9,5 @@ metadata:
   name: my-tenant-minimal
 spec:
   distributionId: "E1XNX8R2GOAABC"
-  name: "my-tenant-minimal"
   domains:
     - domain: "minimal.example.com"

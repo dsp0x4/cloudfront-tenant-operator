@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -43,6 +44,12 @@ const (
 	requeueLong  = 5 * time.Minute
 	resultError  = "error"
 )
+
+// tenantNameRegex validates the resource name against CloudFront naming
+// constraints: 3-128 characters, must start and end with a lowercase
+// alphanumeric, middle characters may include dots and hyphens.
+// This is the lowercase equivalent of CloudFront's own pattern.
+var tenantNameRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9.\-]{1,126}[a-z0-9]$`)
 
 // DistributionTenantReconciler reconciles a DistributionTenant object.
 type DistributionTenantReconciler struct {
@@ -199,7 +206,7 @@ func (r *DistributionTenantReconciler) reconcileDelete(ctx context.Context, tena
 // calling the AWS API, giving users clear error messages for misconfigurations.
 func (r *DistributionTenantReconciler) reconcileCreate(ctx context.Context, tenant *cloudfrontv1alpha1.DistributionTenant) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
-	log.Info("Creating distribution tenant in AWS", "name", tenant.Spec.Name)
+	log.Info("Creating distribution tenant in AWS", "name", tenant.Name)
 
 	// Validate spec against distribution configuration before calling AWS
 	if res, err, handled := r.validateSpec(ctx, tenant); handled {
@@ -532,67 +539,85 @@ func (r *DistributionTenantReconciler) handleAWSError(ctx context.Context, tenan
 func (r *DistributionTenantReconciler) validateSpec(ctx context.Context, tenant *cloudfrontv1alpha1.DistributionTenant) (ctrl.Result, error, bool) {
 	log := logf.FromContext(ctx)
 
+	var validationErrors []string
+
+	// 0. Name validation (local, no AWS call needed):
+	// metadata.name is used as the CloudFront tenant name, so it must conform
+	// to CloudFront's naming constraints (3-128 chars, start/end with
+	// alphanumeric, only lowercase alphanumerics, dots, and hyphens).
+	if !tenantNameRegex.MatchString(tenant.Name) {
+		validationErrors = append(validationErrors,
+			"resource name must be 3-128 characters, start and end with a lowercase alphanumeric, "+
+				"and contain only lowercase alphanumerics, dots, and hyphens")
+	}
+
 	distInfo, err := r.CFClient.GetDistributionInfo(ctx, tenant.Spec.DistributionId)
 	if err != nil {
 		// If we can't fetch distribution info, log a warning but let the
 		// request proceed -- the AWS API will catch any real errors.
 		log.Error(err, "Failed to fetch distribution info for validation; proceeding without local validation",
 			"distributionId", tenant.Spec.DistributionId)
-		return ctrl.Result{}, nil, false
+		if len(validationErrors) == 0 {
+			return ctrl.Result{}, nil, false
+		}
+		// Fall through to report the name validation error even if we can't
+		// fetch distribution info.
 	}
 
-	var validationErrors []string
-
-	// 1. Certificate coverage check:
-	// If the distribution uses the CloudFront default cert (*.cloudfront.net)
-	// or has no custom ACM cert, the tenant MUST provide either a custom
-	// certificate ARN or a managed certificate request.
-	if distInfo.UsesCloudFrontDefaultCert || distInfo.ViewerCertificateArn == "" {
-		hasCertCoverage := false
-		if tenant.Spec.Customizations != nil && tenant.Spec.Customizations.Certificate != nil {
-			hasCertCoverage = true
-		}
-		if tenant.Spec.ManagedCertificateRequest != nil {
-			hasCertCoverage = true
-		}
-		if !hasCertCoverage {
-			validationErrors = append(validationErrors,
-				"the parent distribution does not have a custom ACM certificate; "+
-					"the tenant must provide either spec.customizations.certificate.arn "+
-					"or spec.managedCertificateRequest to cover its domain(s)")
-		}
-	}
-
-	// 2. Managed cert validationTokenHost="cloudfront" advisory:
-	// When using cloudfront-hosted validation, the domain must already be
-	// pointed to CloudFront. We can't verify DNS, but we set a clear message.
-	if tenant.Spec.ManagedCertificateRequest != nil &&
-		tenant.Spec.ManagedCertificateRequest.ValidationTokenHost == "cloudfront" {
-		log.Info("Managed certificate uses cloudfront validation: domain(s) must already have DNS CNAME pointing to CloudFront",
-			"domains", domainsToStrings(tenant.Spec.Domains))
-	}
-
-	// 3. Required parameters check:
-	// Any parameter marked as required in the distribution (without a default
-	// value) must be provided by the tenant.
-	if len(distInfo.ParameterDefinitions) > 0 {
-		tenantParams := make(map[string]string, len(tenant.Spec.Parameters))
-		for _, p := range tenant.Spec.Parameters {
-			tenantParams[p.Name] = p.Value
-		}
-
-		var missingParams []string
-		for _, pd := range distInfo.ParameterDefinitions {
-			if pd.Required && pd.DefaultValue == "" {
-				if _, ok := tenantParams[pd.Name]; !ok {
-					missingParams = append(missingParams, pd.Name)
-				}
+	// The following checks require distribution info from AWS. Skip them if
+	// the fetch failed (distInfo will be nil).
+	if distInfo != nil {
+		// 1. Certificate coverage check:
+		// If the distribution uses the CloudFront default cert (*.cloudfront.net)
+		// or has no custom ACM cert, the tenant MUST provide either a custom
+		// certificate ARN or a managed certificate request.
+		if distInfo.UsesCloudFrontDefaultCert || distInfo.ViewerCertificateArn == "" {
+			hasCertCoverage := false
+			if tenant.Spec.Customizations != nil && tenant.Spec.Customizations.Certificate != nil {
+				hasCertCoverage = true
+			}
+			if tenant.Spec.ManagedCertificateRequest != nil {
+				hasCertCoverage = true
+			}
+			if !hasCertCoverage {
+				validationErrors = append(validationErrors,
+					"the parent distribution does not have a custom ACM certificate; "+
+						"the tenant must provide either spec.customizations.certificate.arn "+
+						"or spec.managedCertificateRequest to cover its domain(s)")
 			}
 		}
-		if len(missingParams) > 0 {
-			validationErrors = append(validationErrors,
-				fmt.Sprintf("the parent distribution requires the following parameter(s) that are not provided: %s",
-					strings.Join(missingParams, ", ")))
+
+		// 2. Managed cert validationTokenHost="cloudfront" advisory:
+		// When using cloudfront-hosted validation, the domain must already be
+		// pointed to CloudFront. We can't verify DNS, but we set a clear message.
+		if tenant.Spec.ManagedCertificateRequest != nil &&
+			tenant.Spec.ManagedCertificateRequest.ValidationTokenHost == "cloudfront" {
+			log.Info("Managed certificate uses cloudfront validation: domain(s) must already have DNS CNAME pointing to CloudFront",
+				"domains", domainsToStrings(tenant.Spec.Domains))
+		}
+
+		// 3. Required parameters check:
+		// Any parameter marked as required in the distribution (without a default
+		// value) must be provided by the tenant.
+		if len(distInfo.ParameterDefinitions) > 0 {
+			tenantParams := make(map[string]string, len(tenant.Spec.Parameters))
+			for _, p := range tenant.Spec.Parameters {
+				tenantParams[p.Name] = p.Value
+			}
+
+			var missingParams []string
+			for _, pd := range distInfo.ParameterDefinitions {
+				if pd.Required && pd.DefaultValue == "" {
+					if _, ok := tenantParams[pd.Name]; !ok {
+						missingParams = append(missingParams, pd.Name)
+					}
+				}
+			}
+			if len(missingParams) > 0 {
+				validationErrors = append(validationErrors,
+					fmt.Sprintf("the parent distribution requires the following parameter(s) that are not provided: %s",
+						strings.Join(missingParams, ", ")))
+			}
 		}
 	}
 
@@ -713,7 +738,7 @@ func (r *DistributionTenantReconciler) recordEvent(tenant *cloudfrontv1alpha1.Di
 func buildCreateInput(tenant *cloudfrontv1alpha1.DistributionTenant) *cfaws.CreateDistributionTenantInput {
 	input := &cfaws.CreateDistributionTenantInput{
 		DistributionId: tenant.Spec.DistributionId,
-		Name:           tenant.Spec.Name,
+		Name:           tenant.Name,
 		Domains:        specToAWSDomains(tenant.Spec.Domains),
 		Enabled:        tenant.Spec.Enabled,
 	}
