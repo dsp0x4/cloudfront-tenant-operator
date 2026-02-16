@@ -340,9 +340,14 @@ func (r *DistributionTenantReconciler) reconcileExisting(ctx context.Context, te
 	// Persisting this to the spec (rather than injecting it transiently)
 	// ensures the three-way diff sees it as a proper spec change and avoids
 	// false drift reports on every reconcile.
+	//
+	// We do NOT call reconcileUpdate inline here. The spec update bumps the
+	// generation and triggers a new reconcile via the watch. That reconcile
+	// will pick up a fresh object (avoiding resourceVersion conflicts) and
+	// the three-way diff will detect changeSpec → reconcileUpdate naturally.
 	if certDetails != nil && certDetails.CertificateStatus == "issued" && certDetails.CertificateArn != "" {
 		if !allDomainsActive(tenant) {
-			log.Info("Managed certificate issued, attaching to tenant",
+			log.Info("Managed certificate issued, persisting ARN to spec for attachment",
 				"id", tenant.Status.ID, "certArn", certDetails.CertificateArn)
 			r.recordEvent(tenant, "Normal", "CertificateAttaching",
 				fmt.Sprintf("Managed certificate %s issued, attaching to domains", certDetails.CertificateArn))
@@ -357,7 +362,9 @@ func (r *DistributionTenantReconciler) reconcileExisting(ctx context.Context, te
 				return ctrl.Result{}, fmt.Errorf("failed to persist managed certificate ARN to spec: %w", err)
 			}
 
-			return r.reconcileUpdate(ctx, tenant, awsTenant)
+			// Return without explicit requeue: the spec update triggers a watch
+			// event, and the next reconcile will push the change to AWS.
+			return ctrl.Result{}, nil
 		}
 	}
 

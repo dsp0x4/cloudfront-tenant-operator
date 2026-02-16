@@ -660,7 +660,7 @@ var _ = Describe("DistributionTenant Controller", func() {
 			Expect(tenant.Status.ManagedCertificateStatus).To(Equal("pending-validation"))
 		})
 
-		It("should persist cert ARN to spec and trigger update when managed cert is issued but domains inactive", func() {
+		It("should persist cert ARN to spec and push update on next reconcile when managed cert is issued", func() {
 			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
 			tenant.Spec.ManagedCertificateRequest = &cloudfrontv1alpha1.ManagedCertificateRequest{
 				ValidationTokenHost: "self-hosted",
@@ -691,28 +691,30 @@ var _ = Describe("DistributionTenant Controller", func() {
 
 			updateCountBefore := mockClient.UpdateCallCount
 
-			// Reconcile: should persist cert ARN to spec and trigger update
+			// Reconcile 1: persists cert ARN to spec but does NOT call AWS update
+			// (returns immediately to avoid resourceVersion conflicts)
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Verify an update was triggered
-			Expect(mockClient.UpdateCallCount).To(BeNumerically(">", updateCountBefore))
+			// No AWS update yet — only the K8s spec was updated
+			Expect(mockClient.UpdateCallCount).To(Equal(updateCountBefore))
+
+			// Verify cert ARN was persisted to the spec
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+			Expect(tenant.Spec.Customizations).NotTo(BeNil())
+			Expect(tenant.Spec.Customizations.Certificate).NotTo(BeNil())
+			Expect(tenant.Spec.Customizations.Certificate.Arn).To(Equal(certArn))
+
+			// Reconcile 2: three-way diff detects spec change (generation bumped
+			// by the spec update), pushes update to AWS
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(mockClient.UpdateCallCount).To(Equal(updateCountBefore + 1))
 
 			// Verify cert ARN is tracked in status
 			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
 			Expect(tenant.Status.CertificateArn).To(Equal(certArn))
 			Expect(tenant.Status.ManagedCertificateStatus).To(Equal("issued"))
-
-			// Verify cert ARN was persisted to the spec
-			Expect(tenant.Spec.Customizations).NotTo(BeNil())
-			Expect(tenant.Spec.Customizations.Certificate).NotTo(BeNil())
-			Expect(tenant.Spec.Customizations.Certificate.Arn).To(Equal(certArn))
-
-			// Verify CertificateReady condition uses the Attaching reason
-			certCond := meta.FindStatusCondition(tenant.Status.Conditions, cloudfrontv1alpha1.ConditionTypeCertificateReady)
-			Expect(certCond).NotTo(BeNil())
-			Expect(certCond.Status).To(Equal(metav1.ConditionFalse))
-			Expect(certCond.Reason).To(Equal(cloudfrontv1alpha1.ReasonCertAttaching))
 		})
 
 		It("should report certificate failure in CertificateReady condition", func() {
