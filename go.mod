@@ -1,4 +1,4 @@
-module github.com/paolo-desantis/cloudfront-tenant-operator
+module github.com/dsp0x4/cloudfront-tenant-operator
 
 go 1.25.3
 

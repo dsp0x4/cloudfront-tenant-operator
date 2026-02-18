@@ -34,9 +34,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	cloudfrontv1alpha1 "github.com/paolo-desantis/cloudfront-tenant-operator/api/v1alpha1"
-	cfaws "github.com/paolo-desantis/cloudfront-tenant-operator/internal/aws"
-	cfmetrics "github.com/paolo-desantis/cloudfront-tenant-operator/internal/metrics"
+	cloudfrontv1alpha1 "github.com/dsp0x4/cloudfront-tenant-operator/api/v1alpha1"
+	cfaws "github.com/dsp0x4/cloudfront-tenant-operator/internal/aws"
+	cfmetrics "github.com/dsp0x4/cloudfront-tenant-operator/internal/metrics"
 )
 
 const (

@@ -7,7 +7,7 @@ domain: cloudfront-tenant-operator.io
 layout:
 - go.kubebuilder.io/v4
 projectName: cloudfront-tenant-operator
-repo: github.com/paolo-desantis/cloudfront-tenant-operator
+repo: github.com/dsp0x4/cloudfront-tenant-operator
 resources:
 - api:
     crdVersion: v1
@@ -16,6 +16,6 @@ resources:
   domain: cloudfront-tenant-operator.io
   group: cloudfront
   kind: DistributionTenant
-  path: github.com/paolo-desantis/cloudfront-tenant-operator/api/v1alpha1
+  path: github.com/dsp0x4/cloudfront-tenant-operator/api/v1alpha1
   version: v1alpha1
 version: "3"

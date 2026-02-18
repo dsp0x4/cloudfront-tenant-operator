@@ -21,8 +21,8 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	cloudfrontv1alpha1 "github.com/paolo-desantis/cloudfront-tenant-operator/api/v1alpha1"
-	cfaws "github.com/paolo-desantis/cloudfront-tenant-operator/internal/aws"
+	cloudfrontv1alpha1 "github.com/dsp0x4/cloudfront-tenant-operator/api/v1alpha1"
+	cfaws "github.com/dsp0x4/cloudfront-tenant-operator/internal/aws"
 )
 
 func boolPtr(b bool) *bool    { return &b }

@@ -12,8 +12,8 @@ keywords:
   - multi-tenant
   - cdn
   - operator
-home: https://github.com/paolo-desantis/cloudfront-tenant-operator
+home: https://github.com/dsp0x4/cloudfront-tenant-operator
 sources:
-  - https://github.com/paolo-desantis/cloudfront-tenant-operator
+  - https://github.com/dsp0x4/cloudfront-tenant-operator
 maintainers:
   - name: cloudfront-tenant-operator

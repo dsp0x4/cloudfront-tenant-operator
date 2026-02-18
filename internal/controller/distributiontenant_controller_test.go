@@ -29,8 +29,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	cloudfrontv1alpha1 "github.com/paolo-desantis/cloudfront-tenant-operator/api/v1alpha1"
-	cfaws "github.com/paolo-desantis/cloudfront-tenant-operator/internal/aws"
+	cloudfrontv1alpha1 "github.com/dsp0x4/cloudfront-tenant-operator/api/v1alpha1"
+	cfaws "github.com/dsp0x4/cloudfront-tenant-operator/internal/aws"
 )
 
 var _ = Describe("DistributionTenant Controller", func() {
