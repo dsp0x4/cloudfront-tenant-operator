@@ -40,7 +40,8 @@ import (
 	cloudfrontv1alpha1 "github.com/dsp0x4/cloudfront-tenant-operator/api/v1alpha1"
 	cfaws "github.com/dsp0x4/cloudfront-tenant-operator/internal/aws"
 	"github.com/dsp0x4/cloudfront-tenant-operator/internal/controller"
-	_ "github.com/dsp0x4/cloudfront-tenant-operator/internal/metrics" // Register Prometheus metrics
+	cfmetrics "github.com/dsp0x4/cloudfront-tenant-operator/internal/metrics"
+	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -209,6 +210,8 @@ func main() {
 	}
 
 	cfClient := cfaws.NewRealCloudFrontClient(awsCfg)
+
+	crmetrics.Registry.MustRegister(cfmetrics.NewTenantCollector(mgr.GetClient()))
 
 	if err := (&controller.DistributionTenantReconciler{
 		Client:      mgr.GetClient(),

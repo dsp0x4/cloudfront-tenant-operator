@@ -55,10 +55,22 @@ Operations that logically require multiple writes are split across reconcile cyc
 
 ## Prometheus Metrics
 
+### Custom metrics
+
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `cloudfront_tenant_operator_reconcile_duration_seconds` | Histogram | `namespace`, `name`, `result` | Duration of reconciliation loops |
-| `cloudfront_tenant_operator_reconcile_errors_total` | Counter | `namespace`, `name`, `error_type` | Total reconciliation errors by type |
-| `cloudfront_tenant_operator_tenants_total` | Gauge | `namespace`, `status` | Number of managed tenants by status |
-| `cloudfront_tenant_operator_drift_detected_total` | Counter | `namespace`, `name` | Total drift detections |
-| `cloudfront_tenant_operator_aws_api_call_duration_seconds` | Histogram | `operation` | Duration of AWS API calls |
+| `cloudfront_tenant_operator_reconcile_errors_total` | Counter | `error_type` | Incremented once per AWS API error classified by `handleAWSError`. **Label values:** `error_type` is one of `domain_conflict`, `access_denied`, `invalid_spec` (terminal), `throttling`, or `retryable`. Not incremented for spec validation failures or Kubernetes API errors. Per-resource errors are available via status conditions and events. |
+| `cloudfront_tenant_operator_tenants_total` | Gauge | `namespace`, `status` | Current number of DistributionTenant resources per namespace. Implemented as a `prometheus.Collector` (kube-state-metrics / cert-manager pattern): the count is computed from the informer cache at Prometheus scrape time, not during reconciliation, so it is never stale and adds zero overhead to the reconcile loop. **Label values:** `status` is `Ready` (Ready condition is True) or `NotReady` (Ready condition is False or absent). |
+| `cloudfront_tenant_operator_drift_detected_total` | Counter | *(none)* | Incremented once each time `handleDrift` fires, regardless of the configured drift policy (enforce, report, or suspend). Provides an aggregate signal for alerting on external AWS drift. Per-resource drift details are available via the `Synced` condition and `status.driftDetected` field. |
+| `cloudfront_tenant_operator_aws_api_call_duration_seconds` | Histogram | `operation` | Wall-clock duration of each AWS CloudFront SDK call made by `RealCloudFrontClient`. Recorded for both successful and failed calls. **Label values:** `operation` is one of `CreateDistributionTenant`, `GetDistributionTenant`, `UpdateDistributionTenant`, `DeleteDistributionTenant`, `GetDistribution`, `GetManagedCertificateDetails`. |
+
+### Built-in controller-runtime metrics
+
+The following metrics are provided automatically by controller-runtime and cover reconcile duration, counts, and error totals per controller:
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `controller_runtime_reconcile_total` | Counter | `controller`, `result` | Total number of reconciliations. `result` is `success`, `error`, `requeue`, or `requeue_after`. |
+| `controller_runtime_reconcile_errors_total` | Counter | `controller` | Total reconciliation errors (when `Reconcile` returns a non-nil error). |
+| `controller_runtime_reconcile_time_seconds` | Histogram | `controller` | Wall-clock duration of each reconciliation loop. |
+| `controller_runtime_active_workers` | Gauge | `controller` | Number of currently active reconcile workers. |

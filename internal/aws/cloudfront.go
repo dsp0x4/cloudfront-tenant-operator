@@ -19,10 +19,13 @@ package aws
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/cloudfront"
 	cftypes "github.com/aws/aws-sdk-go-v2/service/cloudfront/types"
+
+	cfmetrics "github.com/dsp0x4/cloudfront-tenant-operator/internal/metrics"
 )
 
 // cloudFrontAPI defines the subset of the AWS CloudFront SDK client we use.
@@ -50,8 +53,15 @@ func NewRealCloudFrontClient(cfg aws.Config) *RealCloudFrontClient {
 	}
 }
 
+func observeAWSLatency(operation string, start time.Time) {
+	cfmetrics.AWSAPICallDuration.WithLabelValues(operation).Observe(time.Since(start).Seconds())
+}
+
 // CreateDistributionTenant creates a new distribution tenant via the AWS API.
 func (c *RealCloudFrontClient) CreateDistributionTenant(ctx context.Context, input *CreateDistributionTenantInput) (*DistributionTenantOutput, error) {
+	start := time.Now()
+	defer observeAWSLatency("CreateDistributionTenant", start)
+
 	domains := make([]cftypes.DomainItem, len(input.Domains))
 	for i, d := range input.Domains {
 		domains[i] = cftypes.DomainItem{
@@ -110,6 +120,9 @@ func (c *RealCloudFrontClient) CreateDistributionTenant(ctx context.Context, inp
 
 // GetDistributionTenant retrieves a distribution tenant by ID.
 func (c *RealCloudFrontClient) GetDistributionTenant(ctx context.Context, id string) (*DistributionTenantOutput, error) {
+	start := time.Now()
+	defer observeAWSLatency("GetDistributionTenant", start)
+
 	out, err := c.api.GetDistributionTenant(ctx, &cloudfront.GetDistributionTenantInput{
 		Identifier: aws.String(id),
 	})
@@ -122,6 +135,9 @@ func (c *RealCloudFrontClient) GetDistributionTenant(ctx context.Context, id str
 
 // UpdateDistributionTenant updates an existing distribution tenant.
 func (c *RealCloudFrontClient) UpdateDistributionTenant(ctx context.Context, input *UpdateDistributionTenantInput) (*DistributionTenantOutput, error) {
+	start := time.Now()
+	defer observeAWSLatency("UpdateDistributionTenant", start)
+
 	domains := make([]cftypes.DomainItem, len(input.Domains))
 	for i, d := range input.Domains {
 		domains[i] = cftypes.DomainItem{
@@ -170,6 +186,9 @@ func (c *RealCloudFrontClient) UpdateDistributionTenant(ctx context.Context, inp
 
 // DeleteDistributionTenant deletes a distribution tenant by ID.
 func (c *RealCloudFrontClient) DeleteDistributionTenant(ctx context.Context, id string, ifMatch string) error {
+	start := time.Now()
+	defer observeAWSLatency("DeleteDistributionTenant", start)
+
 	_, err := c.api.DeleteDistributionTenant(ctx, &cloudfront.DeleteDistributionTenantInput{
 		Id:      aws.String(id),
 		IfMatch: aws.String(ifMatch),
@@ -179,6 +198,9 @@ func (c *RealCloudFrontClient) DeleteDistributionTenant(ctx context.Context, id 
 
 // GetDistributionInfo retrieves configuration details about the parent distribution.
 func (c *RealCloudFrontClient) GetDistributionInfo(ctx context.Context, distributionId string) (*DistributionInfo, error) {
+	start := time.Now()
+	defer observeAWSLatency("GetDistribution", start)
+
 	out, err := c.api.GetDistribution(ctx, &cloudfront.GetDistributionInput{
 		Id: aws.String(distributionId),
 	})
@@ -221,6 +243,9 @@ func (c *RealCloudFrontClient) GetDistributionInfo(ctx context.Context, distribu
 
 // GetManagedCertificateDetails retrieves managed certificate details for a tenant.
 func (c *RealCloudFrontClient) GetManagedCertificateDetails(ctx context.Context, tenantIdentifier string) (*ManagedCertificateDetailsOutput, error) {
+	start := time.Now()
+	defer observeAWSLatency("GetManagedCertificateDetails", start)
+
 	out, err := c.api.GetManagedCertificateDetails(ctx, &cloudfront.GetManagedCertificateDetailsInput{
 		Identifier: aws.String(tenantIdentifier),
 	})

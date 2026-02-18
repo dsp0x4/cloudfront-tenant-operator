@@ -24,45 +24,29 @@ import (
 )
 
 var (
-	// ReconcileDuration tracks the time taken for each reconciliation loop.
-	ReconcileDuration = prometheus.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Namespace: "cloudfront_tenant_operator",
-			Name:      "reconcile_duration_seconds",
-			Help:      "Duration of reconciliation loops in seconds.",
-			Buckets:   prometheus.DefBuckets,
-		},
-		[]string{"namespace", "name", "result"},
-	)
-
-	// ReconcileErrors tracks the total number of reconciliation errors by type.
+	// ReconcileErrors tracks the total number of reconciliation errors by
+	// AWS error classification. Per-resource errors are available via status
+	// conditions and Kubernetes events; this counter provides an aggregate
+	// view for alerting and dashboards.
 	ReconcileErrors = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: "cloudfront_tenant_operator",
 			Name:      "reconcile_errors_total",
-			Help:      "Total number of reconciliation errors by error type.",
+			Help:      "Total number of reconciliation errors by AWS error classification.",
 		},
-		[]string{"namespace", "name", "error_type"},
+		[]string{"error_type"},
 	)
 
-	// TenantCount tracks the total number of managed tenants by status.
-	TenantCount = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Namespace: "cloudfront_tenant_operator",
-			Name:      "tenants_total",
-			Help:      "Total number of managed distribution tenants by status.",
-		},
-		[]string{"namespace", "status"},
-	)
-
-	// DriftDetectedCount tracks the total number of drift detections.
-	DriftDetectedCount = prometheus.NewCounterVec(
+	// DriftDetectedCount tracks the total number of drift detections across
+	// all tenants. Per-resource drift is available via the Synced condition
+	// and status.driftDetected field; this counter provides an aggregate
+	// signal for alerting.
+	DriftDetectedCount = prometheus.NewCounter(
 		prometheus.CounterOpts{
 			Namespace: "cloudfront_tenant_operator",
 			Name:      "drift_detected_total",
-			Help:      "Total number of drift detections.",
+			Help:      "Total number of external drift detections across all tenants.",
 		},
-		[]string{"namespace", "name"},
 	)
 
 	// AWSAPICallDuration tracks the duration of AWS API calls.
@@ -79,9 +63,7 @@ var (
 
 func init() {
 	metrics.Registry.MustRegister(
-		ReconcileDuration,
 		ReconcileErrors,
-		TenantCount,
 		DriftDetectedCount,
 		AWSAPICallDuration,
 	)
