@@ -19,6 +19,12 @@ go.work
 # Kubernetes Generated files - skip generated files, except for vendored files
 !vendor/**/zz_generated.*
 
+# Python virtual environment (docs)
+.venv/
+
+# MkDocs build output
+site/
+
 # editor and IDE paraphernalia
 .idea
 .vscode
