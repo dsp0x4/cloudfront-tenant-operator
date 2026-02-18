@@ -42,7 +42,6 @@ import (
 const (
 	requeueShort = 30 * time.Second
 	requeueLong  = 5 * time.Minute
-	resultError  = "error"
 )
 
 // tenantNameRegex validates the resource name against CloudFront naming
@@ -66,14 +65,11 @@ type DistributionTenantReconciler struct {
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile is the main reconciliation loop for DistributionTenant resources.
+//
+// Reconcile duration and total counts are already tracked by controller-runtime's
+// built-in metrics (controller_runtime_reconcile_time_seconds, controller_runtime_reconcile_total).
 func (r *DistributionTenantReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
-	start := time.Now()
-	result := "success"
-
-	defer func() {
-		cfmetrics.ReconcileDuration.WithLabelValues(req.Namespace, req.Name, result).Observe(time.Since(start).Seconds())
-	}()
 
 	// 1. Fetch the DistributionTenant CR
 	var tenant cloudfrontv1alpha1.DistributionTenant
@@ -83,36 +79,23 @@ func (r *DistributionTenantReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	// 2. Handle deletion
 	if !tenant.DeletionTimestamp.IsZero() {
-		res, err := r.reconcileDelete(ctx, &tenant)
-		if err != nil {
-			result = resultError
-		}
-		return res, err
+		return r.reconcileDelete(ctx, &tenant)
 	}
 
 	// 3. Ensure finalizer
 	if !controllerutil.ContainsFinalizer(&tenant, cloudfrontv1alpha1.FinalizerName) {
 		controllerutil.AddFinalizer(&tenant, cloudfrontv1alpha1.FinalizerName)
 		if err := r.Update(ctx, &tenant); err != nil {
-			result = resultError
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
 	}
 
 	// 4. Create or update
-	var res ctrl.Result
-	var err error
 	if tenant.Status.ID == "" {
-		res, err = r.reconcileCreate(ctx, &tenant)
-	} else {
-		res, err = r.reconcileExisting(ctx, &tenant, log)
+		return r.reconcileCreate(ctx, &tenant)
 	}
-
-	if err != nil {
-		result = resultError
-	}
-	return res, err
+	return r.reconcileExisting(ctx, &tenant, log)
 }
 
 // reconcileDelete handles the three-step deletion flow: disable -> wait -> delete.
@@ -381,12 +364,6 @@ func (r *DistributionTenantReconciler) reconcileExisting(ctx context.Context, te
 	// Update certificate readiness condition
 	updateCertificateCondition(tenant, certDetails)
 
-	// TODO: TenantCount.Set(1) is wrong — it overwrites the gauge to 1 on every
-	// reconcile instead of tracking the actual number of deployed tenants.
-	// Replace with a periodic re-count (e.g. list all tenants and set the gauge)
-	// or use Inc/Dec on state transitions with a full recount on startup.
-	cfmetrics.TenantCount.WithLabelValues(tenant.Namespace, "Deployed").Set(1)
-
 	if err := r.Status().Update(ctx, tenant); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -449,7 +426,7 @@ func (r *DistributionTenantReconciler) reconcileUpdate(ctx context.Context, tena
 func (r *DistributionTenantReconciler) handleDrift(ctx context.Context, tenant *cloudfrontv1alpha1.DistributionTenant, awsTenant *cfaws.DistributionTenantOutput, log logr.Logger) (ctrl.Result, error) {
 	log.Info("External drift detected: AWS state was modified outside the operator",
 		"id", tenant.Status.ID, "driftPolicy", r.DriftPolicy)
-	cfmetrics.DriftDetectedCount.WithLabelValues(tenant.Namespace, tenant.Name).Inc()
+	cfmetrics.DriftDetectedCount.Inc()
 
 	now := metav1.Now()
 	tenant.Status.LastDriftCheckTime = &now
@@ -507,7 +484,7 @@ func (r *DistributionTenantReconciler) handleAWSError(ctx context.Context, tenan
 		}
 
 		log.Error(err, "Terminal AWS error, will not retry", "operation", operation, "reason", reason)
-		cfmetrics.ReconcileErrors.WithLabelValues(tenant.Namespace, tenant.Name, errorType).Inc()
+		cfmetrics.ReconcileErrors.WithLabelValues(errorType).Inc()
 		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
 			reason, fmt.Sprintf("AWS %s failed: %v", operation, err))
 		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeSynced, metav1.ConditionFalse,
@@ -526,12 +503,12 @@ func (r *DistributionTenantReconciler) handleAWSError(ctx context.Context, tenan
 
 	if cfaws.IsThrottling(err) {
 		log.Info("AWS API rate limited, backing off", "operation", operation)
-		cfmetrics.ReconcileErrors.WithLabelValues(tenant.Namespace, tenant.Name, "throttling").Inc()
+		cfmetrics.ReconcileErrors.WithLabelValues("throttling").Inc()
 		return ctrl.Result{RequeueAfter: requeueShort * 2}, nil
 	}
 
 	// Retryable error: return the error so controller-runtime applies backoff
-	cfmetrics.ReconcileErrors.WithLabelValues(tenant.Namespace, tenant.Name, "retryable").Inc()
+	cfmetrics.ReconcileErrors.WithLabelValues("retryable").Inc()
 	return ctrl.Result{}, fmt.Errorf("AWS %s failed (retryable): %w", operation, err)
 }
 
