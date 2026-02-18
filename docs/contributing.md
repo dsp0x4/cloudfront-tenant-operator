@@ -5,7 +5,7 @@
 Clone the repository and ensure you have the [prerequisites](getting-started/installation.md#prerequisites) installed.
 
 ```sh
-git clone https://github.com/paolo-desantis/cloudfront-tenant-operator.git
+git clone https://github.com/dsp0x4/cloudfront-tenant-operator.git
 cd cloudfront-tenant-operator
 ```
 

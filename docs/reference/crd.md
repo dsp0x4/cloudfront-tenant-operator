@@ -2,7 +2,7 @@
 
 Full reference for the `DistributionTenant` custom resource.
 
-See the [Go type definitions](https://github.com/paolo-desantis/cloudfront-tenant-operator/blob/main/api/v1alpha1/distributiontenant_types.go) and [example CRs](https://github.com/paolo-desantis/cloudfront-tenant-operator/tree/main/config/samples/) for additional detail.
+See the [Go type definitions](https://github.com/dsp0x4/cloudfront-tenant-operator/blob/main/api/v1alpha1/distributiontenant_types.go) and [example CRs](https://github.com/dsp0x4/cloudfront-tenant-operator/tree/main/config/samples/) for additional detail.
 
 ## Spec Fields
 

@@ -4,7 +4,7 @@
 
 A Kubernetes operator for managing [CloudFront Distribution Tenants](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/distribution-tenants.html) -- the AWS CloudFront multi-tenant content delivery feature.
 
-**[Full Documentation](https://paolo-desantis.github.io/cloudfront-tenant-operator/)**
+**[Full Documentation](https://dsp0x4.github.io/cloudfront-tenant-operator/)**
 
 ## What It Does
 
@@ -38,11 +38,11 @@ kubectl get distributiontenants -w
 
 ## Documentation
 
-- [Installation](https://paolo-desantis.github.io/cloudfront-tenant-operator/getting-started/installation/)
-- [Quickstart](https://paolo-desantis.github.io/cloudfront-tenant-operator/getting-started/quickstart/)
-- [CRD Reference](https://paolo-desantis.github.io/cloudfront-tenant-operator/reference/crd/)
-- [Architecture](https://paolo-desantis.github.io/cloudfront-tenant-operator/architecture/overview/)
-- [Contributing](https://paolo-desantis.github.io/cloudfront-tenant-operator/contributing/)
+- [Installation](https://dsp0x4.github.io/cloudfront-tenant-operator/getting-started/installation/)
+- [Quickstart](https://dsp0x4.github.io/cloudfront-tenant-operator/getting-started/quickstart/)
+- [CRD Reference](https://dsp0x4.github.io/cloudfront-tenant-operator/reference/crd/)
+- [Architecture](https://dsp0x4.github.io/cloudfront-tenant-operator/architecture/overview/)
+- [Contributing](https://dsp0x4.github.io/cloudfront-tenant-operator/contributing/)
 
 ## Development
 
