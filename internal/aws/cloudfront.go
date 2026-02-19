@@ -38,6 +38,7 @@ type cloudFrontAPI interface {
 	GetDistribution(ctx context.Context, params *cloudfront.GetDistributionInput, optFns ...func(*cloudfront.Options)) (*cloudfront.GetDistributionOutput, error)
 	GetManagedCertificateDetails(ctx context.Context, params *cloudfront.GetManagedCertificateDetailsInput, optFns ...func(*cloudfront.Options)) (*cloudfront.GetManagedCertificateDetailsOutput, error)
 	GetConnectionGroup(ctx context.Context, params *cloudfront.GetConnectionGroupInput, optFns ...func(*cloudfront.Options)) (*cloudfront.GetConnectionGroupOutput, error)
+	ListConnectionGroups(ctx context.Context, params *cloudfront.ListConnectionGroupsInput, optFns ...func(*cloudfront.Options)) (*cloudfront.ListConnectionGroupsOutput, error)
 }
 
 // RealCloudFrontClient is the production implementation of CloudFrontClient
@@ -301,6 +302,39 @@ func (c *RealCloudFrontClient) GetConnectionGroupRoutingEndpoint(ctx context.Con
 	}
 
 	return aws.ToString(out.ConnectionGroup.RoutingEndpoint), nil
+}
+
+// GetDefaultConnectionGroupEndpoint lists connection groups to find the
+// account's default and returns its routing endpoint.
+func (c *RealCloudFrontClient) GetDefaultConnectionGroupEndpoint(ctx context.Context) (string, error) {
+	start := time.Now()
+	defer observeAWSLatency("ListConnectionGroups", start)
+
+	out, err := c.api.ListConnectionGroups(ctx, &cloudfront.ListConnectionGroupsInput{})
+	if err != nil {
+		return "", classifyAWSError(err)
+	}
+
+	if out == nil {
+		return "", fmt.Errorf("%w: no connection groups returned", ErrConnectionGroupNotFound)
+	}
+
+	for _, cg := range out.ConnectionGroups {
+		if cg.IsDefault != nil && *cg.IsDefault {
+			if cg.RoutingEndpoint == nil {
+				return "", fmt.Errorf(
+					"%w: default connection group has no routing endpoint",
+					ErrConnectionGroupNotFound,
+				)
+			}
+			return aws.ToString(cg.RoutingEndpoint), nil
+		}
+	}
+
+	return "", fmt.Errorf(
+		"%w: no default connection group found in account",
+		ErrConnectionGroupNotFound,
+	)
 }
 
 // toAWSCustomizations converts our domain type to the AWS SDK type.

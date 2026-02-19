@@ -26,7 +26,7 @@ The controller follows a multi-phase reconciliation loop:
 1. **Create** (DNS-first when configured):
     1. Validate spec (name format, certificate coverage, required parameters).
     2. If DNS is configured and no managed cert: validate that the ACM certificate's SANs cover all tenant domains.
-    3. Resolve CNAME target: connection group routing endpoint (if configured), otherwise the distribution's CloudFront domain.
+    3. Resolve CNAME target: the specified connection group's routing endpoint, or the account's default connection group endpoint if none is specified (multi-tenant distributions always route through a connection group).
     4. Upsert CNAME records in Route53 and store the change ID in status.
     5. Poll Route53 `GetChange` until the change reaches `INSYNC`.
     6. Call `CreateDistributionTenant`.
@@ -93,7 +93,8 @@ The operator's IAM identity (or the assumed role for DNS) needs the following AW
 | `route53:GetChange` | `*` | Polling for record propagation |
 | `acm:DescribeCertificate` | Certificate ARN | Validating certificate SANs cover tenant domains |
 | `sts:AssumeRole` | Role ARN from `assumeRoleArn` | Cross-account Route53 access (only when configured) |
-| `cloudfront:GetConnectionGroup` | `*` | Resolving connection group routing endpoint |
+| `cloudfront:GetConnectionGroup` | `*` | Resolving a specific connection group's routing endpoint |
+| `cloudfront:ListConnectionGroups` | `*` | Finding the default connection group's routing endpoint |
 | `cloudfront:CreateDistributionTenant` | `*` | Creating tenants (existing requirement) |
 | `cloudfront:GetDistributionTenant` | `*` | Reading tenant state (existing requirement) |
 | `cloudfront:UpdateDistributionTenant` | `*` | Updating tenants (existing requirement) |
@@ -110,7 +111,7 @@ The operator's IAM identity (or the assumed role for DNS) needs the following AW
 | `cloudfront_tenant_operator_reconcile_errors_total` | Counter | `error_type` | Incremented once per AWS API error classified by `handleAWSError` or `handleDNSError`. **Label values:** `error_type` is one of `domain_conflict`, `access_denied`, `invalid_spec`, `connection_group_not_found` (CloudFront terminal), `dns_zone_not_found`, `dns_access_denied`, `dns_invalid_input`, `dns_error` (DNS terminal), `throttling`, `dns_throttling` (rate limited), `retryable`, or `dns_retryable`. Not incremented for spec validation failures or Kubernetes API errors. |
 | `cloudfront_tenant_operator_tenants_total` | Gauge | `namespace`, `status` | Current number of DistributionTenant resources per namespace. Implemented as a `prometheus.Collector` (kube-state-metrics / cert-manager pattern): the count is computed from the informer cache at Prometheus scrape time, not during reconciliation, so it is never stale and adds zero overhead to the reconcile loop. **Label values:** `status` is `Ready` (Ready condition is True) or `NotReady` (Ready condition is False or absent). |
 | `cloudfront_tenant_operator_drift_detected_total` | Counter | *(none)* | Incremented once each time `handleDrift` fires, regardless of the configured drift policy (enforce, report, or suspend). Provides an aggregate signal for alerting on external AWS drift. Per-resource drift details are available via the `Synced` condition and `status.driftDetected` field. |
-| `cloudfront_tenant_operator_aws_api_call_duration_seconds` | Histogram | `operation` | Wall-clock duration of each AWS SDK call. Recorded for both successful and failed calls. **Label values:** `operation` is one of `CreateDistributionTenant`, `GetDistributionTenant`, `UpdateDistributionTenant`, `DeleteDistributionTenant`, `GetDistribution`, `GetManagedCertificateDetails`, `GetConnectionGroup`, `Route53ChangeResourceRecordSets`, `Route53GetChange`, `ACMDescribeCertificate`. |
+| `cloudfront_tenant_operator_aws_api_call_duration_seconds` | Histogram | `operation` | Wall-clock duration of each AWS SDK call. Recorded for both successful and failed calls. **Label values:** `operation` is one of `CreateDistributionTenant`, `GetDistributionTenant`, `UpdateDistributionTenant`, `DeleteDistributionTenant`, `GetDistribution`, `GetManagedCertificateDetails`, `GetConnectionGroup`, `ListConnectionGroups`, `Route53ChangeResourceRecordSets`, `Route53GetChange`, `ACMDescribeCertificate`. |
 
 ### Built-in controller-runtime metrics
 

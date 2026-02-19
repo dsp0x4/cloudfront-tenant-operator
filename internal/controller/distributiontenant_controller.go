@@ -428,18 +428,15 @@ func (f *failingDNSClient) DeleteCNAMERecords(_ context.Context, _ *cfaws.Delete
 }
 
 // resolveCNAMETarget determines what the DNS CNAME records should point to.
-// If a connection group is configured, it queries the group's routing endpoint.
-// Otherwise it uses the distribution's default CloudFront domain.
+// Multi-tenant distributions don't have their own domain name; they always
+// route through a connection group. If the tenant specifies a connection
+// group, we use that group's routing endpoint. Otherwise, the account's
+// default connection group is used (the same one CloudFront would pick).
 func (r *DistributionTenantReconciler) resolveCNAMETarget(ctx context.Context, tenant *cloudfrontv1alpha1.DistributionTenant) (string, error) {
 	if tenant.Spec.ConnectionGroupId != nil && *tenant.Spec.ConnectionGroupId != "" {
 		return r.CFClient.GetConnectionGroupRoutingEndpoint(ctx, *tenant.Spec.ConnectionGroupId)
 	}
-
-	distInfo, err := r.CFClient.GetDistributionInfo(ctx, tenant.Spec.DistributionId)
-	if err != nil {
-		return "", fmt.Errorf("failed to get distribution info for CNAME target: %w", err)
-	}
-	return distInfo.DomainName, nil
+	return r.CFClient.GetDefaultConnectionGroupEndpoint(ctx)
 }
 
 // validateCertificateSANs checks that the effective ACM certificate covers all

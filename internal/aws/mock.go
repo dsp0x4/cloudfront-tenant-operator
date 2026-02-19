@@ -64,10 +64,16 @@ type MockCloudFrontClient struct {
 
 	// ConnectionGroupEndpoints stores mock routing endpoints keyed by connection group ID.
 	ConnectionGroupEndpoints map[string]string
+	// DefaultConnectionGroupEndpoint is returned by GetDefaultConnectionGroupEndpoint.
+	DefaultConnectionGroupEndpoint string
 	// GetConnectionGroupError, if set, is returned by GetConnectionGroupRoutingEndpoint.
 	GetConnectionGroupError error
+	// GetDefaultConnectionGroupError, if set, is returned by GetDefaultConnectionGroupEndpoint.
+	GetDefaultConnectionGroupError error
 	// GetConnectionGroupCallCount tracks calls to GetConnectionGroupRoutingEndpoint.
 	GetConnectionGroupCallCount int
+	// GetDefaultConnectionGroupCallCount tracks calls to GetDefaultConnectionGroupEndpoint.
+	GetDefaultConnectionGroupCallCount int
 }
 
 // NewMockCloudFrontClient creates a new MockCloudFrontClient.
@@ -269,6 +275,23 @@ func (m *MockCloudFrontClient) GetConnectionGroupRoutingEndpoint(_ context.Conte
 	}
 
 	return endpoint, nil
+}
+
+// GetDefaultConnectionGroupEndpoint returns the mock default endpoint.
+func (m *MockCloudFrontClient) GetDefaultConnectionGroupEndpoint(_ context.Context) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.GetDefaultConnectionGroupCallCount++
+
+	if m.GetDefaultConnectionGroupError != nil {
+		return "", m.GetDefaultConnectionGroupError
+	}
+
+	if m.DefaultConnectionGroupEndpoint == "" {
+		return "", ErrConnectionGroupNotFound
+	}
+
+	return m.DefaultConnectionGroupEndpoint, nil
 }
 
 // SetTenantStatus allows tests to set the status of a mock tenant

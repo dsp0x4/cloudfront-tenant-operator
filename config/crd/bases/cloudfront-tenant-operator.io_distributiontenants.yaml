@@ -156,7 +156,7 @@ spec:
                     default: 300
                     description: |-
                       ttl is the Time-To-Live for DNS CNAME records in seconds.
-                      Must be between 60 and 172800 (Route53 limits for CNAME records).
+                      Must be between 60 and 172800.
                       Defaults to 300 seconds.
                     format: int64
                     maximum: 172800

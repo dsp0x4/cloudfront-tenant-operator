@@ -57,6 +57,13 @@ type CloudFrontClient interface {
 	// CloudFront connection group. Used to determine the CNAME target when
 	// the tenant uses a custom connection group.
 	GetConnectionGroupRoutingEndpoint(ctx context.Context, connectionGroupId string) (string, error)
+
+	// GetDefaultConnectionGroupEndpoint retrieves the routing endpoint for
+	// the account's default connection group. Multi-tenant distributions
+	// don't have their own domain; they always route through a connection
+	// group. When no connectionGroupId is specified on a tenant, CloudFront
+	// uses this default.
+	GetDefaultConnectionGroupEndpoint(ctx context.Context) (string, error)
 }
 
 // DNSClient defines the interface for managing DNS records. Currently

@@ -81,6 +81,9 @@ var _ = Describe("DistributionTenant Controller", func() {
 			UsesCloudFrontDefaultCert: false,
 		}
 
+		// Default connection group endpoint for DNS CNAME target resolution.
+		mockClient.DefaultConnectionGroupEndpoint = "d111111abcdef8.cloudfront.net"
+
 		// Default ACM certificate SANs cover the test domain.
 		mockACMClient.CertificateSANs["arn:aws:acm:us-east-1:123456789012:certificate/wildcard-cert"] = []string{
 			"*.example.com", "example.com",
