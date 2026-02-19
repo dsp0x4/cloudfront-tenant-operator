@@ -28,7 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -42,6 +42,9 @@ import (
 const (
 	requeueShort = 30 * time.Second
 	requeueLong  = 5 * time.Minute
+
+	// dnsStatusInsync is the Route53 change status indicating records have propagated.
+	dnsStatusInsync = "INSYNC"
 )
 
 // tenantNameRegex validates the resource name against CloudFront naming
@@ -53,10 +56,12 @@ var tenantNameRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9.\-]{1,126}[a-z0-9]$`)
 // DistributionTenantReconciler reconciles a DistributionTenant object.
 type DistributionTenantReconciler struct {
 	client.Client
-	Scheme      *runtime.Scheme
-	CFClient    cfaws.CloudFrontClient
-	Recorder    record.EventRecorder
-	DriftPolicy DriftPolicy
+	Scheme       *runtime.Scheme
+	CFClient     cfaws.CloudFrontClient
+	ACMClient    cfaws.ACMClient
+	NewDNSClient func(assumeRoleArn string) (cfaws.DNSClient, error)
+	Recorder     events.EventRecorder
+	DriftPolicy  DriftPolicy
 }
 
 // +kubebuilder:rbac:groups=cloudfront-tenant-operator.io,resources=distributiontenants,verbs=get;list;watch;create;update;patch;delete
@@ -111,8 +116,11 @@ func (r *DistributionTenantReconciler) reconcileDelete(ctx context.Context, tena
 		return ctrl.Result{}, nil
 	}
 
-	// If never created in AWS, just remove finalizer
+	// If never created in AWS, clean up any DNS records and remove finalizer.
 	if tenant.Status.ID == "" {
+		if err := r.cleanupDNSRecords(ctx, tenant); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to clean up DNS records: %w", err)
+		}
 		log.Info("No AWS resource to delete, removing finalizer")
 		controllerutil.RemoveFinalizer(tenant, cloudfrontv1alpha1.FinalizerName)
 		return ctrl.Result{}, r.Update(ctx, tenant)
@@ -121,7 +129,10 @@ func (r *DistributionTenantReconciler) reconcileDelete(ctx context.Context, tena
 	// Fetch current AWS state
 	awsTenant, err := r.CFClient.GetDistributionTenant(ctx, tenant.Status.ID)
 	if cfaws.IsNotFound(err) {
-		// Already deleted in AWS, remove finalizer
+		// Already deleted in AWS, clean up DNS and remove finalizer.
+		if cleanupErr := r.cleanupDNSRecords(ctx, tenant); cleanupErr != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to clean up DNS records: %w", cleanupErr)
+		}
 		log.Info("AWS resource already deleted, removing finalizer")
 		r.recordEvent(tenant, "Normal", "Deleted", "Distribution tenant was already deleted in AWS")
 		controllerutil.RemoveFinalizer(tenant, cloudfrontv1alpha1.FinalizerName)
@@ -183,15 +194,68 @@ func (r *DistributionTenantReconciler) reconcileDelete(ctx context.Context, tena
 		return ctrl.Result{}, fmt.Errorf("failed to delete distribution tenant: %w", err)
 	}
 
+	// Step 4: Clean up DNS records if configured.
+	if err := r.cleanupDNSRecords(ctx, tenant); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to clean up DNS records: %w", err)
+	}
+
 	log.Info("Distribution tenant deleted from AWS, removing finalizer", "id", tenant.Status.ID)
 	r.recordEvent(tenant, "Normal", "Deleted", fmt.Sprintf("Distribution tenant %s deleted from AWS", tenant.Status.ID))
 	controllerutil.RemoveFinalizer(tenant, cloudfrontv1alpha1.FinalizerName)
 	return ctrl.Result{}, r.Update(ctx, tenant)
 }
 
+// cleanupDNSRecords deletes CNAME records from Route53 during tenant deletion.
+// Uses the dnsTarget stored in status and the current spec domains.
+func (r *DistributionTenantReconciler) cleanupDNSRecords(ctx context.Context, tenant *cloudfrontv1alpha1.DistributionTenant) error {
+	log := logf.FromContext(ctx)
+
+	if tenant.Spec.DNS == nil || tenant.Spec.DNS.HostedZoneId == nil || tenant.Status.DNSTarget == "" {
+		return nil
+	}
+
+	if r.NewDNSClient == nil {
+		return nil
+	}
+
+	ttl := int64(300)
+	if tenant.Spec.DNS.TTL != nil {
+		ttl = *tenant.Spec.DNS.TTL
+	}
+
+	records := make([]cfaws.DNSRecord, len(tenant.Spec.Domains))
+	for i, d := range tenant.Spec.Domains {
+		records[i] = cfaws.DNSRecord{
+			Name:   d.Domain,
+			Target: tenant.Status.DNSTarget,
+			TTL:    ttl,
+		}
+	}
+
+	log.Info("Cleaning up DNS records", "domains", domainsToStrings(tenant.Spec.Domains),
+		"hostedZoneId", *tenant.Spec.DNS.HostedZoneId)
+	dnsClient := r.getDNSClient(tenant)
+	if err := dnsClient.DeleteCNAMERecords(ctx, &cfaws.DeleteDNSRecordsInput{
+		HostedZoneId: *tenant.Spec.DNS.HostedZoneId,
+		Records:      records,
+	}); err != nil {
+		log.Error(err, "Failed to delete DNS records during cleanup")
+		return err
+	}
+
+	r.recordEvent(tenant, "Normal", "DNSCleaned", fmt.Sprintf("DNS CNAME records deleted for %d domain(s)", len(records)))
+	return nil
+}
+
 // reconcileCreate handles creating a new distribution tenant in AWS.
-// It performs spec validation against the distribution configuration before
-// calling the AWS API, giving users clear error messages for misconfigurations.
+// When DNS is configured, this follows a DNS-first flow:
+//  1. Validate spec (including ACM SAN check when not using managed certs)
+//  2. Resolve CNAME target (connection group endpoint or distribution domain)
+//  3. Upsert DNS records and wait for Route53 propagation
+//  4. Create CloudFront tenant
+//
+// State is tracked across reconcile cycles via status.dnsChangeId and
+// status.dnsTarget, following the "at most one K8s write per reconcile" rule.
 func (r *DistributionTenantReconciler) reconcileCreate(ctx context.Context, tenant *cloudfrontv1alpha1.DistributionTenant) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	log.Info("Creating distribution tenant in AWS", "name", tenant.Name)
@@ -201,26 +265,35 @@ func (r *DistributionTenantReconciler) reconcileCreate(ctx context.Context, tena
 		return res, err
 	}
 
+	// DNS-first flow: create and propagate DNS records before creating the tenant.
+	if tenant.Spec.DNS != nil {
+		if res, err, handled := r.reconcileDNSBeforeCreate(ctx, tenant); handled {
+			return res, err
+		}
+	} else {
+		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeDNSReady, metav1.ConditionTrue,
+			cloudfrontv1alpha1.ReasonDNSNotConfigured, "DNS management is not configured")
+	}
+
+	// DNS is ready (or not configured) -- create the CloudFront tenant.
 	input := buildCreateInput(tenant)
 	out, err := r.CFClient.CreateDistributionTenant(ctx, input)
 	if err != nil {
 		return r.handleAWSError(ctx, tenant, err, "create")
 	}
 
-	// Update status with AWS-assigned values
 	tenant.Status.ID = out.ID
 	tenant.Status.Arn = out.Arn
 	tenant.Status.ETag = out.ETag
 	tenant.Status.DistributionTenantStatus = out.Status
 	tenant.Status.ObservedGeneration = tenant.Generation
+	tenant.Status.DNSChangeId = ""
 	updateStatusFromAWS(tenant, out)
 
 	setCondition(tenant, cloudfrontv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
 		cloudfrontv1alpha1.ReasonCreating, "Distribution tenant creation is in progress")
 	setCondition(tenant, cloudfrontv1alpha1.ConditionTypeSynced, metav1.ConditionTrue,
 		cloudfrontv1alpha1.ReasonInSync, "Spec is in sync with AWS")
-
-	// Set initial CertificateReady condition
 	updateCertificateCondition(tenant, nil)
 
 	if err := r.Status().Update(ctx, tenant); err != nil {
@@ -230,6 +303,266 @@ func (r *DistributionTenantReconciler) reconcileCreate(ctx context.Context, tena
 	r.recordEvent(tenant, "Normal", "Created", fmt.Sprintf("Distribution tenant created in AWS with ID %s", out.ID))
 	log.Info("Distribution tenant created", "id", out.ID, "status", out.Status)
 	return ctrl.Result{RequeueAfter: requeueShort}, nil
+}
+
+// reconcileDNSBeforeCreate manages the DNS pre-creation steps:
+// SAN validation, CNAME target resolution, record upsert, and propagation polling.
+// Returns (result, err, handled=true) when the caller should return immediately
+// (DNS is still pending), or (_, _, false) when DNS is ready and creation can proceed.
+func (r *DistributionTenantReconciler) reconcileDNSBeforeCreate(ctx context.Context, tenant *cloudfrontv1alpha1.DistributionTenant) (ctrl.Result, error, bool) {
+	log := logf.FromContext(ctx)
+	dns := tenant.Spec.DNS
+
+	// Step 1: Certificate SAN validation (skip if using managed cert or
+	// if we've already started the DNS flow -- indicated by dnsChangeId).
+	if tenant.Spec.ManagedCertificateRequest == nil && tenant.Status.DNSChangeId == "" {
+		if res, err, handled := r.validateCertificateSANs(ctx, tenant); handled {
+			return res, err, true
+		}
+	}
+
+	// Step 2: If a change is already in-flight, poll for propagation.
+	if tenant.Status.DNSChangeId != "" {
+		status, err := r.getDNSClient(tenant).GetChangeStatus(ctx, tenant.Status.DNSChangeId)
+		if err != nil {
+			return r.handleDNSError(ctx, tenant, err, "poll DNS propagation")
+		}
+
+		if status != dnsStatusInsync {
+			log.Info("DNS change still propagating", "changeId", tenant.Status.DNSChangeId, "status", status)
+			setCondition(tenant, cloudfrontv1alpha1.ConditionTypeDNSReady, metav1.ConditionFalse,
+				cloudfrontv1alpha1.ReasonDNSPropagating,
+				fmt.Sprintf("Waiting for Route53 change %s to propagate", tenant.Status.DNSChangeId))
+			if err := r.Status().Update(ctx, tenant); err != nil {
+				return ctrl.Result{}, err, true
+			}
+			return ctrl.Result{RequeueAfter: requeueShort}, nil, true
+		}
+
+		// INSYNC: DNS is ready -- fall through to tenant creation.
+		log.Info("DNS records propagated", "changeId", tenant.Status.DNSChangeId)
+		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeDNSReady, metav1.ConditionTrue,
+			cloudfrontv1alpha1.ReasonDNSReady, "DNS CNAME records are propagated")
+		return ctrl.Result{}, nil, false
+	}
+
+	// Step 3: Resolve CNAME target.
+	target, err := r.resolveCNAMETarget(ctx, tenant)
+	if err != nil {
+		return r.handleDNSError(ctx, tenant, err, "resolve CNAME target")
+	}
+
+	// Step 4: Upsert DNS records.
+	ttl := int64(300)
+	if dns.TTL != nil {
+		ttl = *dns.TTL
+	}
+
+	records := make([]cfaws.DNSRecord, len(tenant.Spec.Domains))
+	for i, d := range tenant.Spec.Domains {
+		records[i] = cfaws.DNSRecord{
+			Name:   d.Domain,
+			Target: target,
+			TTL:    ttl,
+		}
+	}
+
+	dnsClient := r.getDNSClient(tenant)
+	changeOut, err := dnsClient.UpsertCNAMERecords(ctx, &cfaws.UpsertDNSRecordsInput{
+		HostedZoneId: *dns.HostedZoneId,
+		Records:      records,
+	})
+	if err != nil {
+		return r.handleDNSError(ctx, tenant, err, "create DNS records")
+	}
+
+	log.Info("DNS records upserted, waiting for propagation",
+		"changeId", changeOut.ChangeId, "target", target, "domains", domainsToStrings(tenant.Spec.Domains))
+	r.recordEvent(tenant, "Normal", cloudfrontv1alpha1.ReasonDNSRecordCreating,
+		fmt.Sprintf("DNS CNAME records created for %d domain(s) pointing to %s", len(records), target))
+
+	tenant.Status.DNSChangeId = changeOut.ChangeId
+	tenant.Status.DNSTarget = target
+	setCondition(tenant, cloudfrontv1alpha1.ConditionTypeDNSReady, metav1.ConditionFalse,
+		cloudfrontv1alpha1.ReasonDNSPropagating,
+		fmt.Sprintf("Waiting for Route53 change %s to propagate", changeOut.ChangeId))
+
+	if err := r.Status().Update(ctx, tenant); err != nil {
+		return ctrl.Result{}, err, true
+	}
+	return ctrl.Result{RequeueAfter: requeueShort}, nil, true
+}
+
+// getDNSClient returns a DNSClient for the tenant, using the assumeRoleArn
+// from the DNS config if specified.
+func (r *DistributionTenantReconciler) getDNSClient(tenant *cloudfrontv1alpha1.DistributionTenant) cfaws.DNSClient {
+	roleArn := ""
+	if tenant.Spec.DNS != nil && tenant.Spec.DNS.AssumeRoleArn != nil {
+		roleArn = *tenant.Spec.DNS.AssumeRoleArn
+	}
+	// The factory handles caching/creation. Errors during client creation
+	// are surfaced when the client is actually used.
+	dnsClient, err := r.NewDNSClient(roleArn)
+	if err != nil {
+		return &failingDNSClient{err: err}
+	}
+	return dnsClient
+}
+
+// failingDNSClient is a DNSClient that always returns an error. Used when
+// the DNS client factory fails (e.g., invalid role ARN).
+type failingDNSClient struct {
+	err error
+}
+
+func (f *failingDNSClient) UpsertCNAMERecords(_ context.Context, _ *cfaws.UpsertDNSRecordsInput) (*cfaws.DNSChangeOutput, error) {
+	return nil, f.err
+}
+
+func (f *failingDNSClient) GetChangeStatus(_ context.Context, _ string) (string, error) {
+	return "", f.err
+}
+
+func (f *failingDNSClient) DeleteCNAMERecords(_ context.Context, _ *cfaws.DeleteDNSRecordsInput) error {
+	return f.err
+}
+
+// resolveCNAMETarget determines what the DNS CNAME records should point to.
+// If a connection group is configured, it queries the group's routing endpoint.
+// Otherwise it uses the distribution's default CloudFront domain.
+func (r *DistributionTenantReconciler) resolveCNAMETarget(ctx context.Context, tenant *cloudfrontv1alpha1.DistributionTenant) (string, error) {
+	if tenant.Spec.ConnectionGroupId != nil && *tenant.Spec.ConnectionGroupId != "" {
+		return r.CFClient.GetConnectionGroupRoutingEndpoint(ctx, *tenant.Spec.ConnectionGroupId)
+	}
+
+	distInfo, err := r.CFClient.GetDistributionInfo(ctx, tenant.Spec.DistributionId)
+	if err != nil {
+		return "", fmt.Errorf("failed to get distribution info for CNAME target: %w", err)
+	}
+	return distInfo.DomainName, nil
+}
+
+// validateCertificateSANs checks that the effective ACM certificate covers all
+// of the tenant's domains. Returns (result, err, handled=true) if validation
+// fails and the caller should return.
+func (r *DistributionTenantReconciler) validateCertificateSANs(ctx context.Context, tenant *cloudfrontv1alpha1.DistributionTenant) (ctrl.Result, error, bool) {
+	log := logf.FromContext(ctx)
+
+	if r.ACMClient == nil {
+		log.V(1).Info("ACM client not configured, skipping SAN validation")
+		return ctrl.Result{}, nil, false
+	}
+
+	// Determine which certificate ARN to check.
+	certArn := ""
+	if tenant.Spec.Customizations != nil && tenant.Spec.Customizations.Certificate != nil {
+		certArn = tenant.Spec.Customizations.Certificate.Arn
+	}
+	if certArn == "" {
+		distInfo, err := r.CFClient.GetDistributionInfo(ctx, tenant.Spec.DistributionId)
+		if err != nil {
+			log.Error(err, "Failed to get distribution info for SAN check, skipping")
+			return ctrl.Result{}, nil, false
+		}
+		certArn = distInfo.ViewerCertificateArn
+	}
+	if certArn == "" {
+		log.V(1).Info("No certificate ARN found for SAN validation, skipping")
+		return ctrl.Result{}, nil, false
+	}
+
+	sans, err := r.ACMClient.GetCertificateSANs(ctx, certArn)
+	if err != nil {
+		log.Error(err, "Failed to get certificate SANs, skipping validation", "certArn", certArn)
+		return ctrl.Result{}, nil, false
+	}
+
+	var uncoveredDomains []string
+	for _, d := range tenant.Spec.Domains {
+		if !domainCoveredBySANs(d.Domain, sans) {
+			uncoveredDomains = append(uncoveredDomains, d.Domain)
+		}
+	}
+
+	if len(uncoveredDomains) > 0 {
+		msg := fmt.Sprintf("Certificate %s does not cover domain(s): %s. "+
+			"Add a managed certificate request or use a certificate whose SANs include these domains.",
+			certArn, strings.Join(uncoveredDomains, ", "))
+		log.Info("Certificate SAN validation failed", "uncoveredDomains", uncoveredDomains, "certArn", certArn)
+		r.recordEvent(tenant, "Warning", cloudfrontv1alpha1.ReasonCertSANMismatch, msg)
+		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
+			cloudfrontv1alpha1.ReasonCertSANMismatch, msg)
+		if statusErr := r.Status().Update(ctx, tenant); statusErr != nil {
+			return ctrl.Result{}, statusErr, true
+		}
+		return ctrl.Result{RequeueAfter: requeueLong}, nil, true
+	}
+
+	return ctrl.Result{}, nil, false
+}
+
+// domainCoveredBySANs checks if a domain is covered by any SAN entry.
+// Supports exact matches and single-level wildcard matching (e.g., *.example.com
+// matches foo.example.com but not foo.bar.example.com).
+func domainCoveredBySANs(domain string, sans []string) bool {
+	domain = strings.ToLower(domain)
+	for _, san := range sans {
+		san = strings.ToLower(san)
+		if san == domain {
+			return true
+		}
+		if strings.HasPrefix(san, "*.") {
+			// *.example.com matches foo.example.com but not example.com
+			// and not foo.bar.example.com
+			wildcard := san[2:]
+			if idx := strings.Index(domain, "."); idx > 0 && domain[idx+1:] == wildcard {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// handleDNSError handles errors from DNS operations, classifying them as
+// terminal or retryable following the same pattern as handleAWSError.
+func (r *DistributionTenantReconciler) handleDNSError(ctx context.Context, tenant *cloudfrontv1alpha1.DistributionTenant, err error, operation string) (ctrl.Result, error, bool) {
+	log := logf.FromContext(ctx)
+
+	if cfaws.IsTerminalError(err) {
+		reason := cloudfrontv1alpha1.ReasonDNSError
+		errorType := "dns_error"
+		switch {
+		case errors.Is(err, cfaws.ErrHostedZoneNotFound):
+			errorType = "dns_zone_not_found"
+		case errors.Is(err, cfaws.ErrDNSAccessDenied):
+			errorType = "dns_access_denied"
+		case errors.Is(err, cfaws.ErrDNSInvalidInput):
+			errorType = "dns_invalid_input"
+		case errors.Is(err, cfaws.ErrConnectionGroupNotFound):
+			errorType = "connection_group_not_found"
+		}
+
+		log.Error(err, "Terminal DNS error, will not retry", "operation", operation)
+		cfmetrics.ReconcileErrors.WithLabelValues(errorType).Inc()
+		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeDNSReady, metav1.ConditionFalse,
+			reason, fmt.Sprintf("DNS %s failed: %v", operation, err))
+		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
+			reason, fmt.Sprintf("DNS %s failed: %v", operation, err))
+		if statusErr := r.Status().Update(ctx, tenant); statusErr != nil {
+			return ctrl.Result{}, statusErr, true
+		}
+		r.recordEvent(tenant, "Warning", reason, fmt.Sprintf("Terminal DNS error during %s: %v", operation, err))
+		return ctrl.Result{RequeueAfter: requeueLong}, nil, true
+	}
+
+	if cfaws.IsDNSThrottling(err) {
+		log.Info("Route53 API rate limited, backing off", "operation", operation)
+		cfmetrics.ReconcileErrors.WithLabelValues("dns_throttling").Inc()
+		return ctrl.Result{RequeueAfter: requeueShort * 2}, nil, true
+	}
+
+	cfmetrics.ReconcileErrors.WithLabelValues("dns_retryable").Inc()
+	return ctrl.Result{}, fmt.Errorf("DNS %s failed (retryable): %w", operation, err), true
 }
 
 // reconcileExisting handles steady-state reconciliation for existing tenants.
@@ -298,6 +631,12 @@ func (r *DistributionTenantReconciler) reconcileExisting(ctx context.Context, te
 		if res, err, handled := r.validateSpec(ctx, tenant); handled {
 			return res, err
 		}
+		// Upsert DNS for all current domains before updating CloudFront.
+		if tenant.Spec.DNS != nil {
+			if err := r.upsertDNSForUpdate(ctx, tenant); err != nil {
+				log.Error(err, "Failed to upsert DNS records during update, proceeding with CloudFront update")
+			}
+		}
 		return r.reconcileUpdate(ctx, tenant, awsTenant)
 
 	case changeDrift:
@@ -360,9 +699,13 @@ func (r *DistributionTenantReconciler) reconcileExisting(ctx context.Context, te
 		cloudfrontv1alpha1.ReasonDeployed, "Distribution tenant is deployed and serving traffic")
 	setCondition(tenant, cloudfrontv1alpha1.ConditionTypeSynced, metav1.ConditionTrue,
 		cloudfrontv1alpha1.ReasonInSync, "Spec is in sync with AWS")
-
-	// Update certificate readiness condition
+	updateDNSCondition(tenant)
 	updateCertificateCondition(tenant, certDetails)
+
+	// Clean up DNS records for domains that are in status but not in spec.
+	if tenant.Spec.DNS != nil {
+		r.cleanupOrphanedDNSRecords(ctx, tenant)
+	}
 
 	if err := r.Status().Update(ctx, tenant); err != nil {
 		return ctrl.Result{}, err
@@ -481,6 +824,9 @@ func (r *DistributionTenantReconciler) handleAWSError(ctx context.Context, tenan
 		case errors.Is(err, cfaws.ErrInvalidArgument):
 			reason = cloudfrontv1alpha1.ReasonInvalidSpec
 			errorType = "invalid_spec"
+		case errors.Is(err, cfaws.ErrConnectionGroupNotFound):
+			reason = cloudfrontv1alpha1.ReasonInvalidSpec
+			errorType = "connection_group_not_found"
 		}
 
 		log.Error(err, "Terminal AWS error, will not retry", "operation", operation, "reason", reason)
@@ -710,9 +1056,125 @@ func domainsToStrings(domains []cloudfrontv1alpha1.DomainSpec) []string {
 }
 
 // recordEvent emits a Kubernetes event if the recorder is configured.
-func (r *DistributionTenantReconciler) recordEvent(tenant *cloudfrontv1alpha1.DistributionTenant, eventType, reason, message string) {
+func (r *DistributionTenantReconciler) recordEvent(
+	tenant *cloudfrontv1alpha1.DistributionTenant,
+	eventType, reason, message string,
+) {
 	if r.Recorder != nil {
-		r.Recorder.Event(tenant, eventType, reason, message)
+		r.Recorder.Eventf(tenant, nil, eventType, reason, reason, message)
+	}
+}
+
+// upsertDNSForUpdate idempotently upserts DNS CNAME records for all current
+// spec domains before submitting a CloudFront update. Unlike the creation flow,
+// this does not wait for propagation -- the tenant already exists.
+func (r *DistributionTenantReconciler) upsertDNSForUpdate(ctx context.Context, tenant *cloudfrontv1alpha1.DistributionTenant) error {
+	log := logf.FromContext(ctx)
+	dns := tenant.Spec.DNS
+
+	if dns == nil || dns.HostedZoneId == nil || r.NewDNSClient == nil {
+		return nil
+	}
+
+	target := tenant.Status.DNSTarget
+	if target == "" {
+		var err error
+		target, err = r.resolveCNAMETarget(ctx, tenant)
+		if err != nil {
+			return fmt.Errorf("failed to resolve CNAME target for DNS update: %w", err)
+		}
+		tenant.Status.DNSTarget = target
+	}
+
+	ttl := int64(300)
+	if dns.TTL != nil {
+		ttl = *dns.TTL
+	}
+
+	records := make([]cfaws.DNSRecord, len(tenant.Spec.Domains))
+	for i, d := range tenant.Spec.Domains {
+		records[i] = cfaws.DNSRecord{
+			Name:   d.Domain,
+			Target: target,
+			TTL:    ttl,
+		}
+	}
+
+	dnsClient := r.getDNSClient(tenant)
+	_, err := dnsClient.UpsertCNAMERecords(ctx, &cfaws.UpsertDNSRecordsInput{
+		HostedZoneId: *dns.HostedZoneId,
+		Records:      records,
+	})
+	if err != nil {
+		return err
+	}
+
+	log.Info("DNS records upserted for update", "domains", domainsToStrings(tenant.Spec.Domains), "target", target)
+	return nil
+}
+
+// cleanupOrphanedDNSRecords removes DNS records for domains that exist in
+// status.domainResults (from previous AWS state) but are no longer in the spec.
+func (r *DistributionTenantReconciler) cleanupOrphanedDNSRecords(ctx context.Context, tenant *cloudfrontv1alpha1.DistributionTenant) {
+	log := logf.FromContext(ctx)
+
+	if tenant.Spec.DNS == nil || tenant.Spec.DNS.HostedZoneId == nil ||
+		r.NewDNSClient == nil || tenant.Status.DNSTarget == "" {
+		return
+	}
+
+	specDomains := make(map[string]bool, len(tenant.Spec.Domains))
+	for _, d := range tenant.Spec.Domains {
+		specDomains[d.Domain] = true
+	}
+
+	ttl := int64(300)
+	if tenant.Spec.DNS.TTL != nil {
+		ttl = *tenant.Spec.DNS.TTL
+	}
+
+	var orphaned []cfaws.DNSRecord
+	for _, dr := range tenant.Status.DomainResults {
+		if !specDomains[dr.Domain] {
+			orphaned = append(orphaned, cfaws.DNSRecord{
+				Name:   dr.Domain,
+				Target: tenant.Status.DNSTarget,
+				TTL:    ttl,
+			})
+		}
+	}
+
+	if len(orphaned) == 0 {
+		return
+	}
+
+	dnsClient := r.getDNSClient(tenant)
+	if err := dnsClient.DeleteCNAMERecords(ctx, &cfaws.DeleteDNSRecordsInput{
+		HostedZoneId: *tenant.Spec.DNS.HostedZoneId,
+		Records:      orphaned,
+	}); err != nil {
+		log.Error(err, "Failed to clean up orphaned DNS records", "orphanedCount", len(orphaned))
+		return
+	}
+
+	orphanedNames := make([]string, len(orphaned))
+	for i, r := range orphaned {
+		orphanedNames[i] = r.Name
+	}
+	log.Info("Cleaned up orphaned DNS records", "domains", orphanedNames)
+}
+
+// updateDNSCondition sets the DNSReady condition based on the current DNS state.
+func updateDNSCondition(tenant *cloudfrontv1alpha1.DistributionTenant) {
+	if tenant.Spec.DNS == nil {
+		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeDNSReady, metav1.ConditionTrue,
+			cloudfrontv1alpha1.ReasonDNSNotConfigured, "DNS management is not configured")
+		return
+	}
+
+	if tenant.Status.DNSTarget != "" {
+		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeDNSReady, metav1.ConditionTrue,
+			cloudfrontv1alpha1.ReasonDNSReady, "DNS CNAME records are propagated")
 	}
 }
 

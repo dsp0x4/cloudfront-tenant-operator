@@ -45,6 +45,8 @@ var _ = Describe("DistributionTenant Controller", func() {
 	var (
 		ctx            context.Context
 		mockClient     *cfaws.MockCloudFrontClient
+		mockDNSClient  *cfaws.MockDNSClient
+		mockACMClient  *cfaws.MockACMClient
 		reconciler     *DistributionTenantReconciler
 		namespacedName types.NamespacedName
 	)
@@ -52,10 +54,16 @@ var _ = Describe("DistributionTenant Controller", func() {
 	BeforeEach(func() {
 		ctx = context.Background()
 		mockClient = cfaws.NewMockCloudFrontClient()
+		mockDNSClient = cfaws.NewMockDNSClient()
+		mockACMClient = cfaws.NewMockACMClient()
 		reconciler = &DistributionTenantReconciler{
-			Client:      k8sClient,
-			Scheme:      k8sClient.Scheme(),
-			CFClient:    mockClient,
+			Client:    k8sClient,
+			Scheme:    k8sClient.Scheme(),
+			CFClient:  mockClient,
+			ACMClient: mockACMClient,
+			NewDNSClient: func(_ string) (cfaws.DNSClient, error) {
+				return mockDNSClient, nil
+			},
 			DriftPolicy: DriftPolicyEnforce,
 		}
 		namespacedName = types.NamespacedName{
@@ -71,6 +79,11 @@ var _ = Describe("DistributionTenant Controller", func() {
 			DomainName:                "d111111abcdef8.cloudfront.net",
 			ViewerCertificateArn:      "arn:aws:acm:us-east-1:123456789012:certificate/wildcard-cert",
 			UsesCloudFrontDefaultCert: false,
+		}
+
+		// Default ACM certificate SANs cover the test domain.
+		mockACMClient.CertificateSANs["arn:aws:acm:us-east-1:123456789012:certificate/wildcard-cert"] = []string{
+			"*.example.com", "example.com",
 		}
 	})
 
@@ -892,6 +905,259 @@ var _ = Describe("DistributionTenant Controller", func() {
 			Expect(certCond.Status).To(Equal(metav1.ConditionFalse))
 			Expect(certCond.Reason).To(Equal(cloudfrontv1alpha1.ReasonCertFailed))
 			Expect(certCond.Message).To(ContainSubstring("validation-timed-out"))
+		})
+	})
+
+	Context("DNS record management", func() {
+		const hostedZoneId = "Z1234567890ABC"
+
+		newDNSTenant := func() *cloudfrontv1alpha1.DistributionTenant {
+			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
+			ttl := int64(300)
+			tenant.Spec.DNS = &cloudfrontv1alpha1.DNSConfig{
+				Provider:     "route53",
+				HostedZoneId: strPtr(hostedZoneId),
+				TTL:          &ttl,
+			}
+			return tenant
+		}
+
+		It("should create DNS records before the tenant and wait for propagation", func() {
+			mockDNSClient.ChangeStatus = "PENDING"
+
+			tenant := newDNSTenant()
+			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
+			// Reconcile 1: add finalizer
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+
+			// Reconcile 2: upsert DNS records, get PENDING status
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueShort))
+			Expect(mockDNSClient.UpsertCallCount).To(Equal(1))
+			Expect(mockClient.CreateCallCount).To(Equal(0))
+
+			// Verify status has changeId and DNSReady=False
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+			Expect(tenant.Status.DNSChangeId).NotTo(BeEmpty())
+			Expect(tenant.Status.DNSTarget).To(Equal("d111111abcdef8.cloudfront.net"))
+			dnsCond := meta.FindStatusCondition(tenant.Status.Conditions, cloudfrontv1alpha1.ConditionTypeDNSReady)
+			Expect(dnsCond).NotTo(BeNil())
+			Expect(dnsCond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(dnsCond.Reason).To(Equal(cloudfrontv1alpha1.ReasonDNSPropagating))
+
+			// Reconcile 3: poll DNS, still PENDING
+			result, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueShort))
+			Expect(mockDNSClient.GetChangeCallCount).To(Equal(1))
+			Expect(mockClient.CreateCallCount).To(Equal(0))
+
+			// DNS propagates
+			mockDNSClient.ChangeStatus = dnsStatusInsync
+
+			// Reconcile 4: DNS INSYNC → create tenant
+			result, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueShort))
+			Expect(mockClient.CreateCallCount).To(Equal(1))
+
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+			Expect(tenant.Status.ID).NotTo(BeEmpty())
+			Expect(tenant.Status.DNSChangeId).To(BeEmpty())
+		})
+
+		It("should skip cert SAN check when managedCertificateRequest is set", func() {
+			mockDNSClient.ChangeStatus = dnsStatusInsync
+
+			tenant := newDNSTenant()
+			tenant.Spec.ManagedCertificateRequest = &cloudfrontv1alpha1.ManagedCertificateRequest{
+				ValidationTokenHost: "cloudfront",
+			}
+			// Distribution uses default cert but tenant has managed cert
+			mockClient.DistributionInfos[distributionId].UsesCloudFrontDefaultCert = true
+			mockClient.DistributionInfos[distributionId].ViewerCertificateArn = ""
+
+			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
+			// Add finalizer
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			// Upsert DNS
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			// DNS INSYNC → create tenant
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			// ACM should NOT have been called since managedCertificateRequest is set
+			Expect(mockACMClient.GetSANsCallCount).To(Equal(0))
+			Expect(mockClient.CreateCallCount).To(Equal(1))
+		})
+
+		It("should reject creation when cert SANs don't cover the domain", func() {
+			// Certificate doesn't cover the tenant's domain
+			mockACMClient.CertificateSANs["arn:aws:acm:us-east-1:123456789012:certificate/wildcard-cert"] = []string{
+				"*.other.com",
+			}
+
+			tenant := newDNSTenant()
+			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
+			// Add finalizer
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+
+			// Should fail SAN validation
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueLong))
+
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+			readyCond := meta.FindStatusCondition(tenant.Status.Conditions, cloudfrontv1alpha1.ConditionTypeReady)
+			Expect(readyCond).NotTo(BeNil())
+			Expect(readyCond.Reason).To(Equal(cloudfrontv1alpha1.ReasonCertSANMismatch))
+			Expect(readyCond.Message).To(ContainSubstring("example.com"))
+
+			Expect(mockDNSClient.UpsertCallCount).To(Equal(0))
+			Expect(mockClient.CreateCallCount).To(Equal(0))
+		})
+
+		It("should pass SAN check with wildcard certificate", func() {
+			mockDNSClient.ChangeStatus = dnsStatusInsync
+			mockACMClient.CertificateSANs["arn:aws:acm:us-east-1:123456789012:certificate/wildcard-cert"] = []string{
+				"*.example.com",
+			}
+
+			tenant := newDNSTenant()
+			tenant.Spec.Domains = []cloudfrontv1alpha1.DomainSpec{
+				{Domain: "foo.example.com"},
+			}
+			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
+			// Add finalizer
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			// Upsert DNS (SAN check passes)
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			// DNS INSYNC → create tenant
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(mockACMClient.GetSANsCallCount).To(Equal(1))
+			Expect(mockClient.CreateCallCount).To(Equal(1))
+		})
+
+		It("should handle hosted zone not found as terminal error", func() {
+			mockDNSClient.UpsertError = cfaws.ErrHostedZoneNotFound
+
+			tenant := newDNSTenant()
+			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
+			// Add finalizer
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+
+			// Should get terminal error
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueLong))
+
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+			dnsCond := meta.FindStatusCondition(tenant.Status.Conditions, cloudfrontv1alpha1.ConditionTypeDNSReady)
+			Expect(dnsCond).NotTo(BeNil())
+			Expect(dnsCond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(dnsCond.Reason).To(Equal(cloudfrontv1alpha1.ReasonDNSError))
+		})
+
+		It("should handle DNS access denied as terminal error", func() {
+			mockDNSClient.UpsertError = cfaws.ErrDNSAccessDenied
+
+			tenant := newDNSTenant()
+			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
+			// Add finalizer
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueLong))
+		})
+
+		It("should delete DNS records when tenant is deleted", func() {
+			mockDNSClient.ChangeStatus = dnsStatusInsync
+
+			tenant := newDNSTenant()
+			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
+			// Add finalizer + upsert DNS + create tenant
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+			awsID := tenant.Status.ID
+			mockClient.SetTenantStatus(awsID, "Deployed")
+
+			// Mark for deletion
+			Expect(k8sClient.Delete(ctx, tenant)).To(Succeed())
+
+			// Reconcile: disable tenant
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+
+			// Simulate deployment completing
+			mockClient.SetTenantStatus(awsID, "Deployed")
+
+			// Reconcile: delete tenant + clean up DNS
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			// DNS records should have been deleted
+			Expect(mockDNSClient.DeleteCallCount).To(Equal(1))
+			Expect(mockClient.DeleteCallCount).To(Equal(1))
+		})
+
+		It("should use connection group routing endpoint when configured", func() {
+			mockDNSClient.ChangeStatus = dnsStatusInsync
+			connGroupId := "cg-custom-123"
+			mockClient.ConnectionGroupEndpoints[connGroupId] = "cg-custom-123.cloudfront.net"
+
+			tenant := newDNSTenant()
+			tenant.Spec.ConnectionGroupId = &connGroupId
+			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
+			// Add finalizer
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			// Upsert DNS
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+			Expect(tenant.Status.DNSTarget).To(Equal("cg-custom-123.cloudfront.net"))
+			Expect(mockClient.GetConnectionGroupCallCount).To(Equal(1))
+		})
+
+		It("should not create DNS records when dns is not configured", func() {
+			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
+			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
+			// Add finalizer + create tenant
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(mockDNSClient.UpsertCallCount).To(Equal(0))
+			Expect(mockClient.CreateCallCount).To(Equal(1))
+		})
+
+		It("should retry when DNS throttling occurs", func() {
+			mockDNSClient.UpsertError = cfaws.ErrDNSThrottling
+
+			tenant := newDNSTenant()
+			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
+			// Add finalizer
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+
+			// Should back off on throttling
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueShort * 2))
 		})
 	})
 })

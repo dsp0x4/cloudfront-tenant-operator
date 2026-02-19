@@ -61,14 +61,22 @@ type MockCloudFrontClient struct {
 
 	// ManagedCertDetails stores mock managed cert details keyed by tenant ID.
 	ManagedCertDetails map[string]*ManagedCertificateDetailsOutput
+
+	// ConnectionGroupEndpoints stores mock routing endpoints keyed by connection group ID.
+	ConnectionGroupEndpoints map[string]string
+	// GetConnectionGroupError, if set, is returned by GetConnectionGroupRoutingEndpoint.
+	GetConnectionGroupError error
+	// GetConnectionGroupCallCount tracks calls to GetConnectionGroupRoutingEndpoint.
+	GetConnectionGroupCallCount int
 }
 
 // NewMockCloudFrontClient creates a new MockCloudFrontClient.
 func NewMockCloudFrontClient() *MockCloudFrontClient {
 	return &MockCloudFrontClient{
-		tenants:            make(map[string]*DistributionTenantOutput),
-		DistributionInfos:  make(map[string]*DistributionInfo),
-		ManagedCertDetails: make(map[string]*ManagedCertificateDetailsOutput),
+		tenants:                  make(map[string]*DistributionTenantOutput),
+		DistributionInfos:        make(map[string]*DistributionInfo),
+		ManagedCertDetails:       make(map[string]*ManagedCertificateDetailsOutput),
+		ConnectionGroupEndpoints: make(map[string]string),
 	}
 }
 
@@ -245,6 +253,24 @@ func (m *MockCloudFrontClient) GetManagedCertificateDetails(_ context.Context, t
 	return details, nil
 }
 
+// GetConnectionGroupRoutingEndpoint returns a mock routing endpoint.
+func (m *MockCloudFrontClient) GetConnectionGroupRoutingEndpoint(_ context.Context, connectionGroupId string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.GetConnectionGroupCallCount++
+
+	if m.GetConnectionGroupError != nil {
+		return "", m.GetConnectionGroupError
+	}
+
+	endpoint, ok := m.ConnectionGroupEndpoints[connectionGroupId]
+	if !ok {
+		return "", ErrConnectionGroupNotFound
+	}
+
+	return endpoint, nil
+}
+
 // SetTenantStatus allows tests to set the status of a mock tenant
 // (e.g., transitioning from InProgress to Deployed).
 func (m *MockCloudFrontClient) SetTenantStatus(id string, status string) {
@@ -267,4 +293,120 @@ func derefString(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// MockDNSClient is a test double for the DNSClient interface.
+type MockDNSClient struct {
+	mu      sync.Mutex
+	records map[string][]DNSRecord // keyed by hosted zone ID
+
+	UpsertError    error
+	GetChangeError error
+	DeleteError    error
+
+	UpsertCallCount    int
+	GetChangeCallCount int
+	DeleteCallCount    int
+
+	// ChangeStatus is the status returned by GetChangeStatus.
+	// Defaults to "INSYNC" if empty.
+	ChangeStatus string
+
+	// LastChangeId is the change ID returned by UpsertCNAMERecords.
+	lastChangeCounter int
+}
+
+// NewMockDNSClient creates a new MockDNSClient.
+func NewMockDNSClient() *MockDNSClient {
+	return &MockDNSClient{
+		records: make(map[string][]DNSRecord),
+	}
+}
+
+func (m *MockDNSClient) UpsertCNAMERecords(_ context.Context, input *UpsertDNSRecordsInput) (*DNSChangeOutput, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.UpsertCallCount++
+
+	if m.UpsertError != nil {
+		return nil, m.UpsertError
+	}
+
+	m.records[input.HostedZoneId] = input.Records
+	m.lastChangeCounter++
+
+	return &DNSChangeOutput{
+		ChangeId: fmt.Sprintf("/change/MOCK%d", m.lastChangeCounter),
+	}, nil
+}
+
+func (m *MockDNSClient) GetChangeStatus(_ context.Context, _ string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.GetChangeCallCount++
+
+	if m.GetChangeError != nil {
+		return "", m.GetChangeError
+	}
+
+	status := m.ChangeStatus
+	if status == "" {
+		status = "INSYNC"
+	}
+	return status, nil
+}
+
+func (m *MockDNSClient) DeleteCNAMERecords(_ context.Context, input *DeleteDNSRecordsInput) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.DeleteCallCount++
+
+	if m.DeleteError != nil {
+		return m.DeleteError
+	}
+
+	delete(m.records, input.HostedZoneId)
+	return nil
+}
+
+// GetRecords returns the currently stored records for a zone, for test assertions.
+func (m *MockDNSClient) GetRecords(hostedZoneId string) []DNSRecord {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.records[hostedZoneId]
+}
+
+// MockACMClient is a test double for the ACMClient interface.
+type MockACMClient struct {
+	mu sync.Mutex
+
+	// CertificateSANs maps certificate ARNs to their Subject Alternative Names.
+	CertificateSANs map[string][]string
+
+	GetSANsError     error
+	GetSANsCallCount int
+}
+
+// NewMockACMClient creates a new MockACMClient.
+func NewMockACMClient() *MockACMClient {
+	return &MockACMClient{
+		CertificateSANs: make(map[string][]string),
+	}
+}
+
+func (m *MockACMClient) GetCertificateSANs(_ context.Context, certificateArn string) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.GetSANsCallCount++
+
+	if m.GetSANsError != nil {
+		return nil, m.GetSANsError
+	}
+
+	sans, ok := m.CertificateSANs[certificateArn]
+	if !ok {
+		return nil, ErrCertificateNotFound
+	}
+
+	return sans, nil
 }

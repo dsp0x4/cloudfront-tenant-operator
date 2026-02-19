@@ -1,9 +1,7 @@
 # DistributionTenant with automatic DNS record management.
-# The operator will create CNAME records in Route53 pointing tenant domains
-# to the CloudFront distribution endpoint.
-#
-# NOTE: The dns feature is a Phase 4 capability. The operator will currently
-# ignore the dns field. This sample serves as a design reference.
+# The operator creates CNAME records in Route53 pointing tenant domains
+# to the CloudFront distribution (or connection group) endpoint.
+# DNS records are created before the tenant and deleted after it.
 apiVersion: cloudfront-tenant-operator.io/v1alpha1
 kind: DistributionTenant
 metadata:
@@ -23,3 +21,7 @@ spec:
   dns:
     provider: route53
     hostedZoneId: "Z1234567890ABC"
+    # TTL for CNAME records in seconds (60-172800, default: 300).
+    ttl: 300
+    # Optional: assume this IAM role for Route53 API calls (cross-account).
+    # assumeRoleArn: "arn:aws:iam::999999999999:role/Route53DnsManager"

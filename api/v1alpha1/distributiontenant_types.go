@@ -68,14 +68,14 @@ type DistributionTenantSpec struct {
 
 	// dns configures automatic DNS record management for the tenant's domains.
 	// When configured, the operator will create/update/delete CNAME records
-	// pointing to the CloudFront distribution endpoint.
-	// This is a Phase 4 feature -- the operator will ignore this field until
-	// the DNS controller is implemented.
+	// pointing to the CloudFront distribution or connection group endpoint.
+	// DNS records are created before the tenant and deleted after it.
 	// +optional
 	DNS *DNSConfig `json:"dns,omitempty"`
 }
 
 // DNSConfig configures automatic DNS record management.
+// +kubebuilder:validation:XValidation:rule="self.provider != 'route53' || has(self.hostedZoneId)",message="hostedZoneId is required when provider is 'route53'"
 type DNSConfig struct {
 	// provider is the DNS provider to use for record management.
 	// +kubebuilder:validation:Required
@@ -86,6 +86,21 @@ type DNSConfig struct {
 	// Required when provider is "route53".
 	// +optional
 	HostedZoneId *string `json:"hostedZoneId,omitempty"`
+
+	// ttl is the Time-To-Live for DNS CNAME records in seconds.
+	// Must be between 60 and 172800.
+	// Defaults to 300 seconds.
+	// +optional
+	// +kubebuilder:validation:Minimum=60
+	// +kubebuilder:validation:Maximum=172800
+	// +kubebuilder:default=300
+	TTL *int64 `json:"ttl,omitempty"`
+
+	// assumeRoleArn is the ARN of an IAM role to assume when making Route53
+	// API calls. Use this when the hosted zone is in a different AWS account
+	// than the operator. Only affects Route53 operations (not CloudFront).
+	// +optional
+	AssumeRoleArn *string `json:"assumeRoleArn,omitempty"`
 }
 
 // DomainSpec represents a domain to associate with the distribution tenant.
@@ -258,6 +273,17 @@ type DistributionTenantStatus struct {
 	// +optional
 	DriftDetected bool `json:"driftDetected,omitempty"`
 
+	// dnsChangeId is the Route53 change ID for a pending DNS record change.
+	// Set after upserting records and cleared once the change reaches INSYNC.
+	// Used to track propagation across reconcile cycles.
+	// +optional
+	DNSChangeId string `json:"dnsChangeId,omitempty"`
+
+	// dnsTarget is the CNAME target (CloudFront endpoint) used for DNS records.
+	// Stored in status so deletion can clean up records even if the spec changes.
+	// +optional
+	DNSTarget string `json:"dnsTarget,omitempty"`
+
 	// conditions represent the latest available observations of the
 	// DistributionTenant's state.
 	// +listType=map
@@ -287,6 +313,10 @@ const (
 	// ConditionTypeCertificateReady indicates whether the managed certificate
 	// has been validated and is ready for use.
 	ConditionTypeCertificateReady = "CertificateReady"
+
+	// ConditionTypeDNSReady indicates whether DNS records have been created
+	// and propagated in Route53.
+	ConditionTypeDNSReady = "DNSReady"
 )
 
 // Condition reason constants.
@@ -311,6 +341,13 @@ const (
 	ReasonValidationFailed   = "ValidationFailed"
 	ReasonMissingParameters  = "MissingParameters"
 	ReasonMissingCertificate = "MissingCertificate"
+
+	ReasonDNSRecordCreating = "DNSRecordCreating"
+	ReasonDNSPropagating    = "DNSPropagating"
+	ReasonDNSReady          = "DNSReady"
+	ReasonDNSError          = "DNSError"
+	ReasonDNSNotConfigured  = "DNSNotConfigured"
+	ReasonCertSANMismatch   = "CertificateSANMismatch"
 )
 
 // FinalizerName is the finalizer used by this operator.

@@ -210,14 +210,19 @@ func main() {
 	}
 
 	cfClient := cfaws.NewRealCloudFrontClient(awsCfg)
+	acmClient := cfaws.NewRealACMClient(awsCfg)
 
 	crmetrics.Registry.MustRegister(cfmetrics.NewTenantCollector(mgr.GetClient()))
 
 	if err := (&controller.DistributionTenantReconciler{
-		Client:      mgr.GetClient(),
-		Scheme:      mgr.GetScheme(),
-		CFClient:    cfClient,
-		Recorder:    mgr.GetEventRecorderFor("distributiontenant-controller"),
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		CFClient:  cfClient,
+		ACMClient: acmClient,
+		NewDNSClient: func(assumeRoleArn string) (cfaws.DNSClient, error) {
+			return cfaws.NewRealRoute53Client(awsCfg, assumeRoleArn)
+		},
+		Recorder:    mgr.GetEventRecorder("distributiontenant-controller"),
 		DriftPolicy: controller.DriftPolicy(driftPolicy),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "DistributionTenant")

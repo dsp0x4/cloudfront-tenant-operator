@@ -37,6 +37,7 @@ type cloudFrontAPI interface {
 	DeleteDistributionTenant(ctx context.Context, params *cloudfront.DeleteDistributionTenantInput, optFns ...func(*cloudfront.Options)) (*cloudfront.DeleteDistributionTenantOutput, error)
 	GetDistribution(ctx context.Context, params *cloudfront.GetDistributionInput, optFns ...func(*cloudfront.Options)) (*cloudfront.GetDistributionOutput, error)
 	GetManagedCertificateDetails(ctx context.Context, params *cloudfront.GetManagedCertificateDetailsInput, optFns ...func(*cloudfront.Options)) (*cloudfront.GetManagedCertificateDetailsOutput, error)
+	GetConnectionGroup(ctx context.Context, params *cloudfront.GetConnectionGroupInput, optFns ...func(*cloudfront.Options)) (*cloudfront.GetConnectionGroupOutput, error)
 }
 
 // RealCloudFrontClient is the production implementation of CloudFrontClient
@@ -277,6 +278,29 @@ func (c *RealCloudFrontClient) GetManagedCertificateDetails(ctx context.Context,
 	}
 
 	return result, nil
+}
+
+// GetConnectionGroupRoutingEndpoint retrieves the routing endpoint for a connection group.
+func (c *RealCloudFrontClient) GetConnectionGroupRoutingEndpoint(ctx context.Context, connectionGroupId string) (string, error) {
+	start := time.Now()
+	defer observeAWSLatency("GetConnectionGroup", start)
+
+	out, err := c.api.GetConnectionGroup(ctx, &cloudfront.GetConnectionGroupInput{
+		Identifier: aws.String(connectionGroupId),
+	})
+	if err != nil {
+		classified := classifyAWSError(err)
+		if IsNotFound(classified) {
+			return "", fmt.Errorf("%w: %s", ErrConnectionGroupNotFound, connectionGroupId)
+		}
+		return "", classified
+	}
+
+	if out.ConnectionGroup == nil || out.ConnectionGroup.RoutingEndpoint == nil {
+		return "", fmt.Errorf("%w: connection group %s has no routing endpoint", ErrConnectionGroupNotFound, connectionGroupId)
+	}
+
+	return aws.ToString(out.ConnectionGroup.RoutingEndpoint), nil
 }
 
 // toAWSCustomizations converts our domain type to the AWS SDK type.
