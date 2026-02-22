@@ -133,10 +133,15 @@ spec:
                 description: |-
                   dns configures automatic DNS record management for the tenant's domains.
                   When configured, the operator will create/update/delete CNAME records
-                  pointing to the CloudFront distribution endpoint.
-                  This is a Phase 4 feature -- the operator will ignore this field until
-                  the DNS controller is implemented.
+                  pointing to the CloudFront distribution or connection group endpoint.
+                  DNS records are created before the tenant and deleted after it.
                 properties:
+                  assumeRoleArn:
+                    description: |-
+                      assumeRoleArn is the ARN of an IAM role to assume when making Route53
+                      API calls. Use this when the hosted zone is in a different AWS account
+                      than the operator. Only affects Route53 operations (not CloudFront).
+                    type: string
                   hostedZoneId:
                     description: |-
                       hostedZoneId is the Route53 hosted zone ID where records will be managed.
@@ -147,9 +152,22 @@ spec:
                     enum:
                     - route53
                     type: string
+                  ttl:
+                    default: 300
+                    description: |-
+                      ttl is the Time-To-Live for DNS CNAME records in seconds.
+                      Must be between 60 and 172800.
+                      Defaults to 300 seconds.
+                    format: int64
+                    maximum: 172800
+                    minimum: 60
+                    type: integer
                 required:
                 - provider
                 type: object
+                x-kubernetes-validations:
+                - message: hostedZoneId is required when provider is 'route53'
+                  rule: self.provider != 'route53' || has(self.hostedZoneId)
               domains:
                 description: |-
                   domains is the list of domains associated with the distribution tenant.
@@ -332,6 +350,17 @@ spec:
                 description: |-
                   distributionTenantStatus is the AWS-reported deployment status
                   (e.g., "InProgress", "Deployed").
+                type: string
+              dnsChangeId:
+                description: |-
+                  dnsChangeId is the Route53 change ID for a pending DNS record change.
+                  Set after upserting records and cleared once the change reaches INSYNC.
+                  Used to track propagation across reconcile cycles.
+                type: string
+              dnsTarget:
+                description: |-
+                  dnsTarget is the CNAME target (CloudFront endpoint) used for DNS records.
+                  Stored in status so deletion can clean up records even if the spec changes.
                 type: string
               domainResults:
                 description: domainResults reflects the status of each domain as reported

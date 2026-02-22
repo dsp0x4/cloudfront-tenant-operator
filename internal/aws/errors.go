@@ -24,6 +24,11 @@ import (
 	"github.com/aws/smithy-go"
 )
 
+const (
+	awsErrCodeThrottling  = "Throttling"
+	awsErrCodeTooManyReqs = "TooManyRequests"
+)
+
 // Terminal error sentinel values. These errors indicate conditions that cannot
 // be resolved by retrying and require user intervention.
 var (
@@ -49,6 +54,25 @@ var (
 
 	// ErrThrottling indicates the API rate limit was exceeded.
 	ErrThrottling = errors.New("API rate limit exceeded")
+
+	// ErrHostedZoneNotFound indicates the Route53 hosted zone does not exist.
+	ErrHostedZoneNotFound = errors.New("Route53 hosted zone not found")
+
+	// ErrDNSAccessDenied indicates the caller does not have permission to
+	// manage records in the hosted zone (possibly a cross-account issue).
+	ErrDNSAccessDenied = errors.New("DNS access denied: check IAM permissions and assumeRoleArn")
+
+	// ErrDNSInvalidInput indicates the DNS record change request is invalid.
+	ErrDNSInvalidInput = errors.New("invalid DNS record change request")
+
+	// ErrDNSThrottling indicates the Route53 API rate limit was exceeded.
+	ErrDNSThrottling = errors.New("Route53 API rate limit exceeded")
+
+	// ErrCertificateNotFound indicates the ACM certificate does not exist.
+	ErrCertificateNotFound = errors.New("ACM certificate not found")
+
+	// ErrConnectionGroupNotFound indicates the connection group does not exist.
+	ErrConnectionGroupNotFound = errors.New("connection group not found")
 )
 
 // IsTerminalError returns true if the error is a terminal error that should
@@ -57,7 +81,12 @@ var (
 func IsTerminalError(err error) bool {
 	return errors.Is(err, ErrDomainConflict) ||
 		errors.Is(err, ErrAccessDenied) ||
-		errors.Is(err, ErrInvalidArgument)
+		errors.Is(err, ErrInvalidArgument) ||
+		errors.Is(err, ErrHostedZoneNotFound) ||
+		errors.Is(err, ErrDNSAccessDenied) ||
+		errors.Is(err, ErrDNSInvalidInput) ||
+		errors.Is(err, ErrCertificateNotFound) ||
+		errors.Is(err, ErrConnectionGroupNotFound)
 }
 
 // IsNotFound returns true if the error indicates the resource was not found.
@@ -107,10 +136,65 @@ func classifyAWSError(err error) error {
 			return fmt.Errorf("%w: %s", ErrResourceNotDisabled, msg)
 		case code == "PreconditionFailed" || code == "InvalidIfMatchVersion":
 			return fmt.Errorf("%w: %s", ErrPreconditionFailed, msg)
-		case code == "Throttling" || code == "TooManyRequests":
+		case code == awsErrCodeThrottling || code == awsErrCodeTooManyReqs:
 			return fmt.Errorf("%w: %s", ErrThrottling, msg)
 		}
 	}
 
 	return err
+}
+
+// classifyRoute53Error maps Route53 AWS SDK errors to domain error types.
+func classifyRoute53Error(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		code := apiErr.ErrorCode()
+		msg := apiErr.ErrorMessage()
+		switch code {
+		case "NoSuchHostedZone", "HostedZoneNotFound":
+			return fmt.Errorf("%w: %s", ErrHostedZoneNotFound, msg)
+		case "AccessDenied", "AccessDeniedException":
+			return fmt.Errorf("%w: %s", ErrDNSAccessDenied, msg)
+		case "InvalidInput", "InvalidChangeBatch":
+			return fmt.Errorf("%w: %s", ErrDNSInvalidInput, msg)
+		case awsErrCodeThrottling, awsErrCodeTooManyReqs, "PriorRequestNotComplete":
+			return fmt.Errorf("%w: %s", ErrDNSThrottling, msg)
+		case "NoSuchChange":
+			return fmt.Errorf("%w: %s", ErrNotFound, msg)
+		}
+	}
+
+	return err
+}
+
+// classifyACMError maps ACM AWS SDK errors to domain error types.
+func classifyACMError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		code := apiErr.ErrorCode()
+		msg := apiErr.ErrorMessage()
+		switch code {
+		case "ResourceNotFoundException":
+			return fmt.Errorf("%w: %s", ErrCertificateNotFound, msg)
+		case "AccessDeniedException":
+			return fmt.Errorf("%w: %s", ErrAccessDenied, msg)
+		case awsErrCodeThrottling, awsErrCodeTooManyReqs:
+			return fmt.Errorf("%w: %s", ErrThrottling, msg)
+		}
+	}
+
+	return err
+}
+
+// IsDNSThrottling returns true if the error is due to Route53 rate limiting.
+func IsDNSThrottling(err error) bool {
+	return errors.Is(err, ErrDNSThrottling)
 }

@@ -52,6 +52,42 @@ type CloudFrontClient interface {
 	// for a distribution tenant. Returns nil details (without error) if no
 	// managed certificate is configured for the tenant.
 	GetManagedCertificateDetails(ctx context.Context, tenantIdentifier string) (*ManagedCertificateDetailsOutput, error)
+
+	// GetConnectionGroupRoutingEndpoint retrieves the routing endpoint for a
+	// CloudFront connection group. Used to determine the CNAME target when
+	// the tenant uses a custom connection group.
+	GetConnectionGroupRoutingEndpoint(ctx context.Context, connectionGroupId string) (string, error)
+
+	// GetDefaultConnectionGroupEndpoint retrieves the routing endpoint for
+	// the account's default connection group. Multi-tenant distributions
+	// don't have their own domain; they always route through a connection
+	// group. When no connectionGroupId is specified on a tenant, CloudFront
+	// uses this default.
+	GetDefaultConnectionGroupEndpoint(ctx context.Context) (string, error)
+}
+
+// DNSClient defines the interface for managing DNS records. Currently
+// implemented by Route53 only (provider="route53").
+type DNSClient interface {
+	// UpsertCNAMERecords creates or updates CNAME records in the hosted zone.
+	// Returns the change ID that can be polled via GetChangeStatus.
+	UpsertCNAMERecords(ctx context.Context, input *UpsertDNSRecordsInput) (*DNSChangeOutput, error)
+
+	// GetChangeStatus returns the propagation status of a Route53 change.
+	// Returns "PENDING" or "INSYNC".
+	GetChangeStatus(ctx context.Context, changeId string) (string, error)
+
+	// DeleteCNAMERecords removes CNAME records from the hosted zone.
+	// Silently succeeds if the records do not exist.
+	DeleteCNAMERecords(ctx context.Context, input *DeleteDNSRecordsInput) error
+}
+
+// ACMClient defines the interface for retrieving ACM certificate details.
+// Used to validate that a certificate's SANs cover the tenant's domains
+// before creating DNS records.
+type ACMClient interface {
+	// GetCertificateSANs retrieves the Subject Alternative Names for a certificate.
+	GetCertificateSANs(ctx context.Context, certificateArn string) ([]string, error)
 }
 
 // CreateDistributionTenantInput represents the input for creating a distribution tenant.
@@ -215,4 +251,28 @@ type ValidationTokenDetailOutput struct {
 	Domain       string
 	RedirectFrom string
 	RedirectTo   string
+}
+
+// UpsertDNSRecordsInput represents the input for creating or updating DNS records.
+type UpsertDNSRecordsInput struct {
+	HostedZoneId string
+	Records      []DNSRecord
+}
+
+// DNSRecord represents a single CNAME DNS record.
+type DNSRecord struct {
+	Name   string
+	Target string
+	TTL    int64
+}
+
+// DNSChangeOutput represents the result of a DNS record change.
+type DNSChangeOutput struct {
+	ChangeId string
+}
+
+// DeleteDNSRecordsInput represents the input for deleting DNS records.
+type DeleteDNSRecordsInput struct {
+	HostedZoneId string
+	Records      []DNSRecord
 }
