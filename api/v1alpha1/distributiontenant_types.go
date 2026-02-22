@@ -342,12 +342,13 @@ const (
 	ReasonMissingParameters  = "MissingParameters"
 	ReasonMissingCertificate = "MissingCertificate"
 
-	ReasonDNSRecordCreating = "DNSRecordCreating"
-	ReasonDNSPropagating    = "DNSPropagating"
-	ReasonDNSReady          = "DNSReady"
-	ReasonDNSError          = "DNSError"
-	ReasonDNSNotConfigured  = "DNSNotConfigured"
-	ReasonCertSANMismatch   = "CertificateSANMismatch"
+	ReasonDNSRecordCreating       = "DNSRecordCreating"
+	ReasonDNSPropagating          = "DNSPropagating"
+	ReasonDNSReady                = "DNSReady"
+	ReasonDNSError                = "DNSError"
+	ReasonDNSNotConfigured        = "DNSNotConfigured"
+	ReasonCertSANMismatch         = "CertificateSANMismatch"
+	ReasonDomainValidationPending = "DomainValidationPending"
 )
 
 // FinalizerName is the finalizer used by this operator.

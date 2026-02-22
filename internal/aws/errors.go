@@ -159,7 +159,12 @@ func classifyRoute53Error(err error) error {
 			return fmt.Errorf("%w: %s", ErrHostedZoneNotFound, msg)
 		case "AccessDenied", "AccessDeniedException":
 			return fmt.Errorf("%w: %s", ErrDNSAccessDenied, msg)
-		case "InvalidInput", "InvalidChangeBatch":
+		case "InvalidInput":
+			return fmt.Errorf("%w: %s", ErrDNSInvalidInput, msg)
+		case "InvalidChangeBatch":
+			if strings.Contains(strings.ToLower(msg), "not found") {
+				return fmt.Errorf("%w: %s", ErrNotFound, msg)
+			}
 			return fmt.Errorf("%w: %s", ErrDNSInvalidInput, msg)
 		case awsErrCodeThrottling, awsErrCodeTooManyReqs, "PriorRequestNotComplete":
 			return fmt.Errorf("%w: %s", ErrDNSThrottling, msg)
