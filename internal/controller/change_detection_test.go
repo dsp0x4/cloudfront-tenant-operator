@@ -353,6 +353,7 @@ func TestSpecMatchesAWS(t *testing.T) {
 				Enabled:        boolPtr(true),
 				ManagedCertificateRequest: &cloudfrontv1alpha1.ManagedCertificateRequest{
 					ValidationTokenHost: "cloudfront",
+					PrimaryDomainName:   "a.com",
 				},
 				Customizations: &cloudfrontv1alpha1.Customizations{
 					Certificate: &cloudfrontv1alpha1.CertificateCustomization{
@@ -380,6 +381,7 @@ func TestSpecMatchesAWS(t *testing.T) {
 				Enabled:        boolPtr(true),
 				ManagedCertificateRequest: &cloudfrontv1alpha1.ManagedCertificateRequest{
 					ValidationTokenHost: "cloudfront",
+					PrimaryDomainName:   "a.com",
 				},
 			},
 			aws: cfaws.DistributionTenantOutput{

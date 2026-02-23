@@ -1,36 +1,33 @@
-# Disabled while the repo is private -- GitHub Pages is public by default.
-# Uncomment the workflow below when the repo is made public.
-#
-# name: Deploy Docs
-#
-# on:
-#   push:
-#     branches:
-#       - main
-#     paths:
-#       - "docs/**"
-#       - "mkdocs.yml"
-#       - "requirements-docs.txt"
-#       - ".github/workflows/docs.yml"
-#
-# permissions:
-#   contents: write
-#
-# jobs:
-#   deploy:
-#     name: Deploy documentation
-#     runs-on: ubuntu-latest
-#     steps:
-#       - name: Checkout
-#         uses: actions/checkout@v4
-#
-#       - name: Setup Python
-#         uses: actions/setup-python@v5
-#         with:
-#           python-version: "3.12"
-#
-#       - name: Install dependencies
-#         run: pip install -r requirements-docs.txt
-#
-#       - name: Build and deploy
-#         run: mkdocs gh-deploy --force
+name: Deploy Docs
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - "requirements-docs.txt"
+      - ".github/workflows/docs.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    name: Deploy documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements-docs.txt
+
+      - name: Build and deploy
+        run: mkdocs gh-deploy --force

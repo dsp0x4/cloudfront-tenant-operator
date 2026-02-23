@@ -16,7 +16,7 @@ env:
 
 jobs:
   release:
-    name: Release
+    name: Publish Container Image
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

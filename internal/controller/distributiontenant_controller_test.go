@@ -567,6 +567,7 @@ var _ = Describe("DistributionTenant Controller", func() {
 			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
 			tenant.Spec.ManagedCertificateRequest = &cloudfrontv1alpha1.ManagedCertificateRequest{
 				ValidationTokenHost: "self-hosted",
+				PrimaryDomainName:   "example.com",
 			}
 			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
 
@@ -779,6 +780,7 @@ var _ = Describe("DistributionTenant Controller", func() {
 			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
 			tenant.Spec.ManagedCertificateRequest = &cloudfrontv1alpha1.ManagedCertificateRequest{
 				ValidationTokenHost: "self-hosted",
+				PrimaryDomainName:   "example.com",
 			}
 			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
 
@@ -823,6 +825,7 @@ var _ = Describe("DistributionTenant Controller", func() {
 			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
 			tenant.Spec.ManagedCertificateRequest = &cloudfrontv1alpha1.ManagedCertificateRequest{
 				ValidationTokenHost: "self-hosted",
+				PrimaryDomainName:   "example.com",
 			}
 			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
 
@@ -880,6 +883,7 @@ var _ = Describe("DistributionTenant Controller", func() {
 			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
 			tenant.Spec.ManagedCertificateRequest = &cloudfrontv1alpha1.ManagedCertificateRequest{
 				ValidationTokenHost: "cloudfront",
+				PrimaryDomainName:   "example.com",
 			}
 			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
 
@@ -977,6 +981,7 @@ var _ = Describe("DistributionTenant Controller", func() {
 			tenant := newDNSTenant()
 			tenant.Spec.ManagedCertificateRequest = &cloudfrontv1alpha1.ManagedCertificateRequest{
 				ValidationTokenHost: "cloudfront",
+				PrimaryDomainName:   "example.com",
 			}
 			// Distribution uses default cert but tenant has managed cert
 			mockClient.DistributionInfos[distributionId].UsesCloudFrontDefaultCert = true
@@ -1152,6 +1157,7 @@ var _ = Describe("DistributionTenant Controller", func() {
 			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
 			tenant.Spec.ManagedCertificateRequest = &cloudfrontv1alpha1.ManagedCertificateRequest{
 				ValidationTokenHost: "cloudfront",
+				PrimaryDomainName:   "example.com",
 			}
 			// Distribution uses default cert but tenant has managed cert
 			mockClient.DistributionInfos[distributionId].UsesCloudFrontDefaultCert = true
@@ -1182,6 +1188,7 @@ var _ = Describe("DistributionTenant Controller", func() {
 			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
 			tenant.Spec.ManagedCertificateRequest = &cloudfrontv1alpha1.ManagedCertificateRequest{
 				ValidationTokenHost: "self-hosted",
+				PrimaryDomainName:   "example.com",
 			}
 			mockClient.DistributionInfos[distributionId].UsesCloudFrontDefaultCert = true
 			mockClient.DistributionInfos[distributionId].ViewerCertificateArn = ""
