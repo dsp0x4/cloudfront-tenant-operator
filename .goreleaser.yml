@@ -1,6 +1,7 @@
 version: 2
 
 project_name: cloudfront-tenant-operator
+dist: .goreleaser-dist
 
 builds:
   - id: manager

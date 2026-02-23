@@ -35,11 +35,11 @@ site/
 # Kubeconfig might contain secrets
 *.kubeconfig
 
-# Generated Helm chart CRDs (copied from config/crd/bases/ by make helm-crds)
-dist/chart/crds/
+# GoReleaser build output
+.goreleaser-dist/
 
 # Helm packaged archives
 dist/*.tgz
 
-# GoReleaser build output
+# Kustomize installer bundle
 dist/install.yaml
