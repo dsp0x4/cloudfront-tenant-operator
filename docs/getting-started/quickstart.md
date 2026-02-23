@@ -70,7 +70,7 @@ spec:
       value: "platform"
 ```
 
-Additional samples are available for [DNS management](../../config/samples/cloudfront_v1alpha1_distributiontenant_with_dns.yaml) and [managed certificates](../../config/samples/cloudfront_v1alpha1_distributiontenant_managed_cert.yaml).
+Additional samples are available for [DNS management](https://github.com/dsp0x4/cloudfront-tenant-operator/tree/main/config/samples/cloudfront_v1alpha1_distributiontenant_with_dns.yaml) and [managed certificates](https://github.com/dsp0x4/cloudfront-tenant-operator/tree/main/config/samples/cloudfront_v1alpha1_distributiontenant_managed_cert.yaml).
 
 ## Monitor Status
 

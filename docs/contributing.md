@@ -24,11 +24,11 @@ make lint-fix
 # Regenerate CRD manifests and DeepCopy methods after editing *_types.go
 make manifests generate
 
+# Install CRDs
+make install
+
 # Run the operator locally against your current kubeconfig
 make run
-
-# Build and push the container image
-make docker-build docker-push IMG=<registry>/cloudfront-tenant-operator:tag
 ```
 
 ## Test Structure

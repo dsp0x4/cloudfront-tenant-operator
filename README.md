@@ -1,5 +1,11 @@
 # cloudfront-tenant-operator
 
+[![Release](https://github.com/dsp0x4/cloudfront-tenant-operator/actions/workflows/release.yml/badge.svg)](https://github.com/dsp0x4/cloudfront-tenant-operator/actions/workflows/release.yml)
+[![Tests](https://github.com/dsp0x4/cloudfront-tenant-operator/actions/workflows/test.yml/badge.svg)](https://github.com/dsp0x4/cloudfront-tenant-operator/actions/workflows/test.yml)
+[![Lint](https://github.com/dsp0x4/cloudfront-tenant-operator/actions/workflows/lint.yml/badge.svg)](https://github.com/dsp0x4/cloudfront-tenant-operator/actions/workflows/lint.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/dsp0x4/cloudfront-tenant-operator)](https://github.com/dsp0x4/cloudfront-tenant-operator/releases/latest)
+[![License](https://img.shields.io/github/license/dsp0x4/cloudfront-tenant-operator)](LICENSE)
+
 > **Work in Progress** -- This project is under active development. APIs and behavior may change without notice.
 
 A Kubernetes operator for managing [CloudFront Distribution Tenants](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/distribution-tenants.html) -- the AWS CloudFront multi-tenant content delivery feature.

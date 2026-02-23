@@ -90,11 +90,6 @@ helm install cloudfront-tenant-operator \
   --create-namespace
 ```
 
-> **Private registries:** If the chart is hosted in a private OCI registry, log in first:
-> ```sh
-> helm registry login ghcr.io -u <username>
-> ```
-
 ### Install from local source
 
 If you cloned the repository, you can install directly from the chart directory:
@@ -186,22 +181,14 @@ make install
 
 ### Deploy the operator
 
-**Build and push the operator image:**
-
 ```sh
-make docker-build docker-push IMG=<your-registry>/cloudfront-tenant-operator:latest
-```
-
-**Deploy:**
-
-```sh
-make deploy IMG=<your-registry>/cloudfront-tenant-operator:latest
+make deploy IMG=ghcr.io/dsp0x4/cloudfront-tenant-operator:<version>
 ```
 
 ### Uninstall
 
 ```sh
-kubectl delete -k config/samples/   # Delete CRs
+kubectl delete -k config/samples/    # Delete CRs
 make undeploy                        # Remove operator
 make uninstall                       # Delete CRDs
 ```
