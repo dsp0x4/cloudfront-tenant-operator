@@ -20,41 +20,21 @@ builds:
       - -X main.commit={{.Commit}}
       - -X main.date={{.Date}}
 
-dockers:
-  - image_templates:
-      - "{{ .Env.REGISTRY }}/{{ .Env.IMAGE_REPO }}:{{ .Version }}-amd64"
-    dockerfile: Dockerfile
-    use: buildx
-    build_flag_templates:
-      - "--platform=linux/amd64"
-      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
-      - "--label=org.opencontainers.image.version={{ .Version }}"
-      - "--label=org.opencontainers.image.source={{ .GitURL }}"
-    goarch: amd64
-
-  - image_templates:
-      - "{{ .Env.REGISTRY }}/{{ .Env.IMAGE_REPO }}:{{ .Version }}-arm64"
-    dockerfile: Dockerfile
-    use: buildx
-    build_flag_templates:
-      - "--platform=linux/arm64"
-      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
-      - "--label=org.opencontainers.image.version={{ .Version }}"
-      - "--label=org.opencontainers.image.source={{ .GitURL }}"
-    goarch: arm64
-
-docker_manifests:
-  - name_template: "{{ .Env.REGISTRY }}/{{ .Env.IMAGE_REPO }}:{{ .Version }}"
-    image_templates:
-      - "{{ .Env.REGISTRY }}/{{ .Env.IMAGE_REPO }}:{{ .Version }}-amd64"
-      - "{{ .Env.REGISTRY }}/{{ .Env.IMAGE_REPO }}:{{ .Version }}-arm64"
-  - name_template: "{{ .Env.REGISTRY }}/{{ .Env.IMAGE_REPO }}:latest"
-    image_templates:
-      - "{{ .Env.REGISTRY }}/{{ .Env.IMAGE_REPO }}:{{ .Version }}-amd64"
-      - "{{ .Env.REGISTRY }}/{{ .Env.IMAGE_REPO }}:{{ .Version }}-arm64"
+dockers_v2:
+  - images:
+      - "{{ .Env.REGISTRY }}/{{ .Env.IMAGE_REPO }}"
+    dockerfile: Dockerfile.release
+    tags:
+      - "{{ .Version }}"
+      - latest
+    labels:
+      "org.opencontainers.image.title": "{{ .ProjectName }}"
+      "org.opencontainers.image.version": "{{ .Version }}"
+      "org.opencontainers.image.source": "{{ .GitURL }}"
 
 archives:
-  - format: tar.gz
+  - formats:
+      - tar.gz
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
 checksum:
