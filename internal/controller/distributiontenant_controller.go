@@ -1399,7 +1399,7 @@ func specToAWSManagedCertRequest(m *cloudfrontv1alpha1.ManagedCertificateRequest
 	}
 	return &cfaws.ManagedCertificateRequestInput{
 		ValidationTokenHost:                      m.ValidationTokenHost,
-		PrimaryDomainName:                        m.PrimaryDomainName,
+		PrimaryDomainName:                        &m.PrimaryDomainName,
 		CertificateTransparencyLoggingPreference: m.CertificateTransparencyLoggingPreference,
 	}
 }

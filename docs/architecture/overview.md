@@ -94,18 +94,19 @@ The operator's IAM identity (or the assumed role for DNS) needs the following AW
 
 | Permission | Resource | Used for |
 |-----------|----------|----------|
-| `route53:ChangeResourceRecordSets` | Hosted zone ARN | Creating and deleting CNAME records |
-| `route53:GetChange` | `*` | Polling for record propagation |
-| `acm:DescribeCertificate` | Certificate ARN | Validating certificate SANs cover tenant domains |
-| `sts:AssumeRole` | Role ARN from `assumeRoleArn` | Cross-account Route53 access (only when configured) |
-| `cloudfront:GetConnectionGroup` | `*` | Resolving a specific connection group's routing endpoint |
+| `cloudfront:CreateDistributionTenant` | `*` | Creating tenants |
+| `cloudfront:GetDistributionTenant` | `*` | Reading tenant state |
+| `cloudfront:UpdateDistributionTenant` | `*` | Updating tenants |
+| `cloudfront:DeleteDistributionTenant` | `*` | Deleting tenants |
+| `cloudfront:GetDistribution` | `*` | Reading distribution config |
+| `cloudfront:GetManagedCertificateDetails` | `*` | Managed certificate lifecycle |
+| `cloudfront:GetConnectionGroup` | `*` | Resolving a connection group's routing endpoint |
 | `cloudfront:ListConnectionGroups` | `*` | Finding the default connection group's routing endpoint |
-| `cloudfront:CreateDistributionTenant` | `*` | Creating tenants (existing requirement) |
-| `cloudfront:GetDistributionTenant` | `*` | Reading tenant state (existing requirement) |
-| `cloudfront:UpdateDistributionTenant` | `*` | Updating tenants (existing requirement) |
-| `cloudfront:DeleteDistributionTenant` | `*` | Deleting tenants (existing requirement) |
-| `cloudfront:GetDistribution` | `*` | Reading distribution config (existing requirement) |
-| `cloudfront:GetManagedCertificateDetails` | `*` | Managed certificate lifecycle (existing requirement) |
+| `acm:RequestCertificate` | `*` | Requesting managed ACM certificates |
+| `acm:DescribeCertificate` | Certificate ARN | Validating certificate SANs cover tenant domains |
+| `route53:ChangeResourceRecordSets` | Hosted zone ARN | Creating and deleting CNAME records (DNS only) |
+| `route53:GetChange` | `*` | Polling for record propagation (DNS only) |
+| `sts:AssumeRole` | Role ARN from `assumeRoleArn` | Cross-account Route53 access (only when configured) |
 
 ## CLI Flags
 

@@ -28,6 +28,8 @@ dockers_v2:
       - "{{ .Version }}"
       - latest
     sbom: false
+    flags:
+      - "--provenance=false"
     labels:
       "org.opencontainers.image.title": "{{ .ProjectName }}"
       "org.opencontainers.image.version": "{{ .Version }}"

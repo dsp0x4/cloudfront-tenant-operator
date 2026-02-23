@@ -33,6 +33,14 @@ For development, you additionally need:
         "cloudfront:ListConnectionGroups"
       ],
       "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "acm:RequestCertificate",
+        "acm:DescribeCertificate"
+      ],
+      "Resource": "*"
     }
   ]
 }
@@ -48,6 +56,8 @@ For development, you additionally need:
 | `GetManagedCertificateDetails` | Tracking managed certificate lifecycle |
 | `GetConnectionGroup` | Resolving a connection group's routing endpoint for DNS |
 | `ListConnectionGroups` | Finding the default connection group's routing endpoint |
+| `acm:RequestCertificate` | Requesting managed ACM certificates via `managedCertificateRequest` |
+| `acm:DescribeCertificate` | Validating certificate SANs cover tenant domains |
 
 ### DNS management permissions (optional)
 
@@ -63,11 +73,6 @@ Required only if you configure `spec.dns` on your tenants:
         "route53:ChangeResourceRecordSets",
         "route53:GetChange"
       ],
-      "Resource": "*"
-    },
-    {
-      "Effect": "Allow",
-      "Action": "acm:DescribeCertificate",
       "Resource": "*"
     }
   ]
@@ -260,7 +265,9 @@ helm install cloudfront-tenant-operator dist/chart/ \
   --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=arn:aws:iam::123456789012:role/my-operator-role
 ```
 
-### Static credentials (non-EKS)
+### Static credentials (non-EKS, not recommended)
+
+> **Warning:** Static credentials do not rotate automatically and increase the risk of credential leakage. Prefer Pod Identity or IRSA whenever possible. Use this method only on non-EKS clusters where no better alternative is available.
 
 For non-EKS clusters, inject AWS credentials via environment variables using the `extraEnv` chart value:
 

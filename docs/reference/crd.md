@@ -39,12 +39,14 @@ See the [Go type definitions](https://github.com/dsp0x4/cloudfront-tenant-operat
 | `certificate` | `CertificateCustomization` | No | ACM certificate override |
 | `geoRestrictions` | `GeoRestrictionCustomization` | No | Geographic restriction override |
 
+> **Note:** ACM certificates used with CloudFront must be created in the **us-east-1** region. This is an AWS requirement.
+
 ### ManagedCertificateRequest
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `validationTokenHost` | string | Yes | Validation method: `"cloudfront"` or `"self-hosted"` |
-| `primaryDomainName` | string | No | Primary domain for the certificate |
+| `primaryDomainName` | string | Yes | Primary domain for the certificate (must be one of the `spec.domains`) |
 | `certificateTransparencyLoggingPreference` | string | No | `"enabled"` or `"disabled"` |
 
 ### DNSConfig

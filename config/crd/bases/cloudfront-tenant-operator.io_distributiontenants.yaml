@@ -80,6 +80,10 @@ spec:
                     required:
                     - arn
                     type: object
+                    x-kubernetes-validations:
+                    - message: ACM certificates used with CloudFront must be in the
+                        us-east-1 region
+                      rule: self.arn.startsWith('arn:aws:acm:us-east-1:')
                   geoRestrictions:
                     description: geoRestrictions configures geographic restrictions
                       for this tenant.
@@ -203,8 +207,10 @@ spec:
                     - disabled
                     type: string
                   primaryDomainName:
-                    description: primaryDomainName is the primary domain for the managed
-                      certificate.
+                    description: |-
+                      primaryDomainName is the primary domain for the managed certificate.
+                      Must be one of the domains listed in spec.domains.
+                    minLength: 1
                     type: string
                   validationTokenHost:
                     description: |-
@@ -217,6 +223,7 @@ spec:
                     - self-hosted
                     type: string
                 required:
+                - primaryDomainName
                 - validationTokenHost
                 type: object
               parameters:

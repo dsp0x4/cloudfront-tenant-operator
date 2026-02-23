@@ -15,7 +15,7 @@ fullnameOverride: ""
 aws:
   # AWS region for CloudFront API calls.
   # If empty, uses SDK default resolution (env vars, config file, IMDS).
-  region: ""
+  region: "us-east-1"
 
 # Controller configuration
 controller:

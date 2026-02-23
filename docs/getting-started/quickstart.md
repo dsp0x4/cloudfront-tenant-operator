@@ -12,6 +12,8 @@ The Kubernetes resource name (`metadata.name`) is used as the CloudFront tenant 
 
 ### Minimal Example
 
+> **Note:** This minimal example does not specify a certificate. It only works if the domain is already covered by the default certificate of the parent distribution. Otherwise, add a `customizations.certificate` or a `managedCertificateRequest` to the spec.
+
 ```yaml
 apiVersion: cloudfront-tenant-operator.io/v1alpha1
 kind: DistributionTenant
