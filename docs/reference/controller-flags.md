@@ -8,6 +8,7 @@ The controller manager accepts the following command-line flags.
 |------|---------|-------------|
 | `--drift-policy` | `enforce` | How to handle external drift on AWS resources. See [Drift Detection](../architecture/drift-detection.md) for details. |
 | `--aws-region` | *(SDK default)* | AWS region for CloudFront API calls. If not set, uses AWS SDK default resolution (environment variables, config file, IMDS). |
+| `--max-concurrent-reconciles` | `1` | Maximum number of concurrent reconcile loops. Higher values improve throughput when managing many tenants but increase AWS API usage. |
 
 ### Drift Policy Values
 
@@ -26,3 +27,16 @@ The controller manager accepts the following command-line flags.
 | `--leader-elect` | `false` | Enable leader election for controller manager. Required for HA deployments with multiple replicas. |
 | `--metrics-secure` | `true` | Serve the metrics endpoint over HTTPS. Set to `false` for HTTP. |
 | `--enable-http2` | `false` | Enable HTTP/2 for metrics and webhook servers. |
+
+## TLS Certificate Flags
+
+These flags are used to provide custom TLS certificates instead of the auto-generated self-signed ones. Only needed in production when using cert-manager or another certificate provider.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--metrics-cert-path` | *(empty)* | Directory containing the metrics server TLS certificate and key. |
+| `--metrics-cert-name` | `tls.crt` | Filename of the metrics server certificate within the cert directory. |
+| `--metrics-cert-key` | `tls.key` | Filename of the metrics server private key within the cert directory. |
+| `--webhook-cert-path` | *(empty)* | Directory containing the webhook server TLS certificate and key. |
+| `--webhook-cert-name` | `tls.crt` | Filename of the webhook server certificate within the cert directory. |
+| `--webhook-cert-key` | `tls.key` | Filename of the webhook server private key within the cert directory. |

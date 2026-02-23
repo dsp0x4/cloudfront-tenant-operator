@@ -3,7 +3,7 @@
 replicaCount: 1
 
 image:
-  repository: ghcr.io/cloudfront-tenant-operator/cloudfront-tenant-operator
+  repository: ghcr.io/dsp0x4/cloudfront-tenant-operator
   tag: ""  # Defaults to appVersion
   pullPolicy: IfNotPresent
 
@@ -16,6 +16,18 @@ aws:
   # AWS region for CloudFront API calls.
   # If empty, uses SDK default resolution (env vars, config file, IMDS).
   region: ""
+
+# Controller configuration
+controller:
+  # How to handle external drift on AWS resources.
+  # enforce: overwrite AWS with the K8s spec (default).
+  # report: log and set conditions but don't modify AWS.
+  # suspend: skip drift detection entirely.
+  driftPolicy: enforce
+  # Maximum number of concurrent reconcile loops.
+  # Higher values improve throughput when managing many tenants
+  # but increase AWS API usage.
+  maxConcurrentReconciles: 1
 
 # Leader election ensures only one controller instance is active.
 leaderElection:
@@ -36,7 +48,8 @@ probes:
 serviceAccount:
   # Specifies whether a service account should be created
   create: true
-  # Annotations to add to the service account (e.g., for IRSA)
+  # Annotations to add to the service account (e.g., for IRSA).
+  # Not needed when using EKS Pod Identity (recommended).
   annotations: {}
   # The name of the service account to use.
   # If not set, a name is generated using the fullname template.
@@ -56,5 +69,3 @@ affinity: {}
 
 # Additional environment variables for the manager container
 extraEnv: []
-# - name: AWS_ROLE_ARN
-#   value: "arn:aws:iam::123456789012:role/cloudfront-tenant-operator"

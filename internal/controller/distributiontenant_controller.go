@@ -147,6 +147,9 @@ func (r *DistributionTenantReconciler) reconcileDelete(ctx context.Context, tena
 		return ctrl.Result{}, r.Update(ctx, tenant)
 	}
 	if err != nil {
+		if cfaws.IsTerminalError(err) {
+			return r.handleAWSError(ctx, tenant, err, "get (during deletion)")
+		}
 		return ctrl.Result{}, fmt.Errorf("failed to get distribution tenant for deletion: %w", err)
 	}
 
@@ -163,6 +166,9 @@ func (r *DistributionTenantReconciler) reconcileDelete(ctx context.Context, tena
 			Enabled:        &enabled,
 		})
 		if err != nil {
+			if cfaws.IsTerminalError(err) {
+				return r.handleAWSError(ctx, tenant, err, "disable (during deletion)")
+			}
 			return ctrl.Result{}, fmt.Errorf("failed to disable distribution tenant: %w", err)
 		}
 		// Update cached ETag and status from the disable response so the
@@ -198,6 +204,9 @@ func (r *DistributionTenantReconciler) reconcileDelete(ctx context.Context, tena
 		if cfaws.IsResourceNotDisabled(err) {
 			// Race condition: still propagating disable. Retry.
 			return ctrl.Result{RequeueAfter: requeueShort}, nil
+		}
+		if cfaws.IsTerminalError(err) {
+			return r.handleAWSError(ctx, tenant, err, "delete")
 		}
 		return ctrl.Result{}, fmt.Errorf("failed to delete distribution tenant: %w", err)
 	}
@@ -591,6 +600,9 @@ func (r *DistributionTenantReconciler) reconcileExisting(ctx context.Context, te
 		return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
 	}
 	if err != nil {
+		if cfaws.IsTerminalError(err) {
+			return r.handleAWSError(ctx, tenant, err, "get")
+		}
 		return ctrl.Result{}, fmt.Errorf("failed to get distribution tenant: %w", err)
 	}
 

@@ -42,3 +42,26 @@ Indicates the status of a CloudFront-managed ACM certificate. Only set when `man
 | `False` | `Attaching` | Certificate has been issued but is being attached to the tenant |
 | `False` | `CertificateFailed` | Certificate validation failed or timed out |
 | `False` | `NotConfigured` | No managed certificate request is configured |
+
+### DNSReady
+
+Indicates whether DNS records have been created and propagated in Route53. Only relevant when `spec.dns` is configured.
+
+| Status | Reason | Meaning |
+|--------|--------|---------|
+| `True` | `DNSReady` | CNAME records are propagated in Route53 |
+| `True` | `DNSNotConfigured` | `spec.dns` is not set; DNS is not managed by the operator |
+| `False` | `DNSRecordCreating` | CNAME records were submitted to Route53 |
+| `False` | `DNSPropagating` | Waiting for Route53 change to reach INSYNC |
+| `False` | `DNSError` | A terminal DNS error occurred (check condition message) |
+
+## Additional Ready Reasons
+
+These reasons are set on the `Ready` condition in specific scenarios:
+
+| Status | Reason | Meaning |
+|--------|--------|---------|
+| `False` | `CertificateSANMismatch` | The ACM certificate's SANs don't cover the tenant's domains |
+| `False` | `DomainValidationPending` | CloudFront cannot verify domain ownership yet (DNS propagation delay); retries every 5 minutes |
+| `False` | `MissingParameters` | Required distribution parameters are missing from the spec |
+| `False` | `MissingCertificate` | No certificate configured for a distribution that requires one |
