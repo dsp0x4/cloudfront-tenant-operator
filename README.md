@@ -50,13 +50,9 @@ kubectl get distributiontenants -w
 - [Architecture](https://dsp0x4.github.io/cloudfront-tenant-operator/architecture/overview/)
 - [Contributing](https://dsp0x4.github.io/cloudfront-tenant-operator/contributing/)
 
-## Development
+## Disclaimer
 
-```sh
-make test              # Run tests
-make lint              # Run linter
-make manifests generate  # Regenerate CRDs after editing types
-```
+This project is not affiliated with, endorsed by, or sponsored by Amazon Web Services (AWS). All AWS service names and trademarks are the property of Amazon.com, Inc. or its affiliates.
 
 ## License
 
