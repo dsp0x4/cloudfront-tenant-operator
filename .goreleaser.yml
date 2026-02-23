@@ -2,10 +2,6 @@ version: 2
 
 project_name: cloudfront-tenant-operator
 
-before:
-  hooks:
-    - go mod tidy
-
 builds:
   - id: manager
     main: ./cmd/main.go
