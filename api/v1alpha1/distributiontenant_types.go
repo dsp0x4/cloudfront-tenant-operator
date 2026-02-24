@@ -158,6 +158,7 @@ type WebAclCustomization struct {
 }
 
 // CertificateCustomization defines an ACM certificate override.
+// +kubebuilder:validation:XValidation:rule="self.arn.startsWith('arn:aws:acm:us-east-1:')",message="ACM certificates used with CloudFront must be in the us-east-1 region"
 type CertificateCustomization struct {
 	// arn is the ARN of the ACM certificate to use for this tenant.
 	// +kubebuilder:validation:Required
@@ -187,8 +188,10 @@ type ManagedCertificateRequest struct {
 	ValidationTokenHost string `json:"validationTokenHost"`
 
 	// primaryDomainName is the primary domain for the managed certificate.
-	// +optional
-	PrimaryDomainName *string `json:"primaryDomainName,omitempty"`
+	// Must be one of the domains listed in spec.domains.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	PrimaryDomainName string `json:"primaryDomainName"`
 
 	// certificateTransparencyLoggingPreference controls CT logging.
 	// +optional
@@ -342,12 +345,13 @@ const (
 	ReasonMissingParameters  = "MissingParameters"
 	ReasonMissingCertificate = "MissingCertificate"
 
-	ReasonDNSRecordCreating = "DNSRecordCreating"
-	ReasonDNSPropagating    = "DNSPropagating"
-	ReasonDNSReady          = "DNSReady"
-	ReasonDNSError          = "DNSError"
-	ReasonDNSNotConfigured  = "DNSNotConfigured"
-	ReasonCertSANMismatch   = "CertificateSANMismatch"
+	ReasonDNSRecordCreating       = "DNSRecordCreating"
+	ReasonDNSPropagating          = "DNSPropagating"
+	ReasonDNSReady                = "DNSReady"
+	ReasonDNSError                = "DNSError"
+	ReasonDNSNotConfigured        = "DNSNotConfigured"
+	ReasonCertSANMismatch         = "CertificateSANMismatch"
+	ReasonDomainValidationPending = "DomainValidationPending"
 )
 
 // FinalizerName is the finalizer used by this operator.

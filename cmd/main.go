@@ -68,6 +68,7 @@ func main() {
 	var enableHTTP2 bool
 	var awsRegion string
 	var driftPolicy string
+	var maxConcurrentReconciles int
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -78,6 +79,9 @@ func main() {
 			"enforce: overwrite AWS with the K8s spec (default). "+
 			"report: log and set conditions but don't modify AWS. "+
 			"suspend: skip drift detection entirely.")
+	flag.IntVar(&maxConcurrentReconciles, "max-concurrent-reconciles", 1,
+		"Maximum number of concurrent reconcile loops. "+
+			"Higher values improve throughput when managing many tenants but increase AWS API usage.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
@@ -94,7 +98,7 @@ func main() {
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	opts := zap.Options{
-		Development: true,
+		Development: false,
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -224,7 +228,7 @@ func main() {
 		},
 		Recorder:    mgr.GetEventRecorder("distributiontenant-controller"),
 		DriftPolicy: controller.DriftPolicy(driftPolicy),
-	}).SetupWithManager(mgr); err != nil {
+	}).SetupWithManager(mgr, maxConcurrentReconciles); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "DistributionTenant")
 		os.Exit(1)
 	}

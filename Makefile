@@ -1,6 +1,9 @@
 # Image URL to use all building/pushing image targets
 IMG ?= controller:latest
 
+# Helm chart OCI registry (overridden by CI via CHART_REPO env var)
+CHART_REGISTRY ?= ghcr.io/dsp0x4/charts
+
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
 GOBIN=$(shell go env GOPATH)/bin
@@ -145,6 +148,20 @@ build-installer: manifests generate kustomize ## Generate a consolidated YAML wi
 	mkdir -p dist
 	cd config/manager && "$(KUSTOMIZE)" edit set image controller=${IMG}
 	"$(KUSTOMIZE)" build config/default > dist/install.yaml
+
+.PHONY: helm-crds
+helm-crds: manifests ## Copy generated CRDs into the Helm chart's crds/ directory.
+	mkdir -p dist/chart/crds
+	cp config/crd/bases/*.yaml dist/chart/crds/
+
+CHART_VERSION := $(shell grep '^version:' dist/chart/Chart.yaml | awk '{print $$2}')
+.PHONY: helm-package
+helm-package: helm-crds ## Package the Helm chart into a .tgz archive.
+	helm package dist/chart/ --destination dist/
+
+.PHONY: helm-push
+helm-push: helm-package ## Push the Helm chart to an OCI registry.
+	helm push dist/cloudfront-tenant-operator-$(CHART_VERSION).tgz oci://$(CHART_REGISTRY)
 
 ##@ Deployment
 

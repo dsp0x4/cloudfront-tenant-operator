@@ -73,6 +73,12 @@ func TestClassifyAWSError(t *testing.T) {
 			containsMsg: "Distribution tenant dt-123 not found",
 		},
 		{
+			name:        "NoSuchDistribution maps to DistributionNotFound",
+			input:       &mockAPIError{code: "NoSuchDistribution", message: "The specified distribution does not exist"},
+			expectedIs:  ErrDistributionNotFound,
+			containsMsg: "The specified distribution does not exist",
+		},
+		{
 			name:        "ResourceNotDisabled maps correctly and preserves message",
 			input:       &mockAPIError{code: "ResourceNotDisabled", message: "The resource must be disabled first"},
 			expectedIs:  ErrResourceNotDisabled,
@@ -153,6 +159,8 @@ func TestIsTerminalError(t *testing.T) {
 		{"wrapped DomainConflict is terminal", classifyAWSError(&mockAPIError{code: "CNAMEAlreadyExists", message: "conflict"}), true},
 		{"wrapped AccessDenied is terminal", classifyAWSError(&mockAPIError{code: "AccessDenied", message: "denied"}), true},
 		{"wrapped InvalidArgument is terminal", classifyAWSError(&mockAPIError{code: "InvalidArgument", message: "bad"}), true},
+		{"DistributionNotFound is terminal", ErrDistributionNotFound, true},
+		{"wrapped DistributionNotFound is terminal", classifyAWSError(&mockAPIError{code: "NoSuchDistribution", message: "not found"}), true},
 		{"NotFound is not terminal", ErrNotFound, false},
 		{"PreconditionFailed is not terminal", ErrPreconditionFailed, false},
 		{"Throttling is not terminal", ErrThrottling, false},

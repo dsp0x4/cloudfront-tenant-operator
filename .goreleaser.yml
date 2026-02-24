@@ -1,10 +1,7 @@
 version: 2
 
 project_name: cloudfront-tenant-operator
-
-before:
-  hooks:
-    - go mod tidy
+dist: .goreleaser-dist
 
 builds:
   - id: manager
@@ -23,57 +20,31 @@ builds:
       - -X main.commit={{.Commit}}
       - -X main.date={{.Date}}
 
-dockers:
-  - image_templates:
-      - "ghcr.io/cloudfront-tenant-operator/cloudfront-tenant-operator:{{ .Version }}-amd64"
-    dockerfile: Dockerfile
-    use: buildx
-    build_flag_templates:
-      - "--platform=linux/amd64"
-      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
-      - "--label=org.opencontainers.image.version={{ .Version }}"
-      - "--label=org.opencontainers.image.source={{ .GitURL }}"
-    goarch: amd64
-
-  - image_templates:
-      - "ghcr.io/cloudfront-tenant-operator/cloudfront-tenant-operator:{{ .Version }}-arm64"
-    dockerfile: Dockerfile
-    use: buildx
-    build_flag_templates:
-      - "--platform=linux/arm64"
-      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
-      - "--label=org.opencontainers.image.version={{ .Version }}"
-      - "--label=org.opencontainers.image.source={{ .GitURL }}"
-    goarch: arm64
-
-docker_manifests:
-  - name_template: "ghcr.io/cloudfront-tenant-operator/cloudfront-tenant-operator:{{ .Version }}"
-    image_templates:
-      - "ghcr.io/cloudfront-tenant-operator/cloudfront-tenant-operator:{{ .Version }}-amd64"
-      - "ghcr.io/cloudfront-tenant-operator/cloudfront-tenant-operator:{{ .Version }}-arm64"
-  - name_template: "ghcr.io/cloudfront-tenant-operator/cloudfront-tenant-operator:latest"
-    image_templates:
-      - "ghcr.io/cloudfront-tenant-operator/cloudfront-tenant-operator:{{ .Version }}-amd64"
-      - "ghcr.io/cloudfront-tenant-operator/cloudfront-tenant-operator:{{ .Version }}-arm64"
+dockers_v2:
+  - images:
+      - "{{ .Env.REGISTRY }}/{{ .Env.IMAGE_REPO }}"
+    dockerfile: Dockerfile.release
+    tags:
+      - "{{ .Version }}"
+      - latest
+    sbom: false
+    flags:
+      - "--provenance=false"
+    labels:
+      "org.opencontainers.image.title": "{{ .ProjectName }}"
+      "org.opencontainers.image.version": "{{ .Version }}"
+      "org.opencontainers.image.source": "{{ .GitURL }}"
 
 archives:
-  - format: tar.gz
+  - formats:
+      - tar.gz
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
 checksum:
   name_template: "checksums.txt"
 
 changelog:
-  sort: asc
-  filters:
-    exclude:
-      - "^docs:"
-      - "^test:"
-      - "^ci:"
-      - "^chore:"
+  use: github-native
 
 release:
-  github:
-    owner: cloudfront-tenant-operator
-    name: cloudfront-tenant-operator
   prerelease: auto

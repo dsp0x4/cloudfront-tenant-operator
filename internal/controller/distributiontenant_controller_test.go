@@ -107,10 +107,10 @@ var _ = Describe("DistributionTenant Controller", func() {
 			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
 			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
 
-			// First reconcile: adds finalizer
+			// First reconcile: adds finalizer (watch event handles requeue)
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(Equal(1 * time.Second))
+			Expect(result).To(Equal(reconcile.Result{}))
 
 			// Verify finalizer was added
 			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
@@ -567,6 +567,7 @@ var _ = Describe("DistributionTenant Controller", func() {
 			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
 			tenant.Spec.ManagedCertificateRequest = &cloudfrontv1alpha1.ManagedCertificateRequest{
 				ValidationTokenHost: "self-hosted",
+				PrimaryDomainName:   "example.com",
 			}
 			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
 
@@ -779,6 +780,7 @@ var _ = Describe("DistributionTenant Controller", func() {
 			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
 			tenant.Spec.ManagedCertificateRequest = &cloudfrontv1alpha1.ManagedCertificateRequest{
 				ValidationTokenHost: "self-hosted",
+				PrimaryDomainName:   "example.com",
 			}
 			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
 
@@ -823,6 +825,7 @@ var _ = Describe("DistributionTenant Controller", func() {
 			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
 			tenant.Spec.ManagedCertificateRequest = &cloudfrontv1alpha1.ManagedCertificateRequest{
 				ValidationTokenHost: "self-hosted",
+				PrimaryDomainName:   "example.com",
 			}
 			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
 
@@ -880,6 +883,7 @@ var _ = Describe("DistributionTenant Controller", func() {
 			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
 			tenant.Spec.ManagedCertificateRequest = &cloudfrontv1alpha1.ManagedCertificateRequest{
 				ValidationTokenHost: "cloudfront",
+				PrimaryDomainName:   "example.com",
 			}
 			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
 
@@ -977,6 +981,7 @@ var _ = Describe("DistributionTenant Controller", func() {
 			tenant := newDNSTenant()
 			tenant.Spec.ManagedCertificateRequest = &cloudfrontv1alpha1.ManagedCertificateRequest{
 				ValidationTokenHost: "cloudfront",
+				PrimaryDomainName:   "example.com",
 			}
 			// Distribution uses default cert but tenant has managed cert
 			mockClient.DistributionInfos[distributionId].UsesCloudFrontDefaultCert = true
@@ -1146,6 +1151,83 @@ var _ = Describe("DistributionTenant Controller", func() {
 
 			Expect(mockDNSClient.UpsertCallCount).To(Equal(0))
 			Expect(mockClient.CreateCallCount).To(Equal(1))
+		})
+
+		It("should treat InvalidArgument as retryable when using cloudfront-hosted validation", func() {
+			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
+			tenant.Spec.ManagedCertificateRequest = &cloudfrontv1alpha1.ManagedCertificateRequest{
+				ValidationTokenHost: "cloudfront",
+				PrimaryDomainName:   "example.com",
+			}
+			// Distribution uses default cert but tenant has managed cert
+			mockClient.DistributionInfos[distributionId].UsesCloudFrontDefaultCert = true
+			mockClient.DistributionInfos[distributionId].ViewerCertificateArn = ""
+			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
+			// Add finalizer
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+
+			// Set up InvalidArgument error (simulates DNS not propagated yet)
+			mockClient.CreateError = cfaws.ErrInvalidArgument
+
+			// Reconcile: should NOT treat as terminal
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueLong))
+
+			// Verify condition is DomainValidationPending (not terminal InvalidSpec)
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+			readyCond := meta.FindStatusCondition(tenant.Status.Conditions, cloudfrontv1alpha1.ConditionTypeReady)
+			Expect(readyCond).NotTo(BeNil())
+			Expect(readyCond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(readyCond.Reason).To(Equal(cloudfrontv1alpha1.ReasonDomainValidationPending))
+			Expect(readyCond.Message).To(ContainSubstring("DNS may still be propagating"))
+		})
+
+		It("should treat InvalidArgument as terminal when using self-hosted validation", func() {
+			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
+			tenant.Spec.ManagedCertificateRequest = &cloudfrontv1alpha1.ManagedCertificateRequest{
+				ValidationTokenHost: "self-hosted",
+				PrimaryDomainName:   "example.com",
+			}
+			mockClient.DistributionInfos[distributionId].UsesCloudFrontDefaultCert = true
+			mockClient.DistributionInfos[distributionId].ViewerCertificateArn = ""
+			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
+			// Add finalizer
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+
+			mockClient.CreateError = cfaws.ErrInvalidArgument
+
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueLong))
+
+			// Should be terminal (InvalidSpec), not DomainValidationPending
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+			readyCond := meta.FindStatusCondition(tenant.Status.Conditions, cloudfrontv1alpha1.ConditionTypeReady)
+			Expect(readyCond).NotTo(BeNil())
+			Expect(readyCond.Reason).To(Equal(cloudfrontv1alpha1.ReasonInvalidSpec))
+		})
+
+		It("should treat InvalidArgument as terminal when no managed cert is configured", func() {
+			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
+			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
+			// Add finalizer
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+
+			mockClient.CreateError = cfaws.ErrInvalidArgument
+
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(requeueLong))
+
+			// Should be terminal (InvalidSpec), not DomainValidationPending
+			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())
+			readyCond := meta.FindStatusCondition(tenant.Status.Conditions, cloudfrontv1alpha1.ConditionTypeReady)
+			Expect(readyCond).NotTo(BeNil())
+			Expect(readyCond.Reason).To(Equal(cloudfrontv1alpha1.ReasonInvalidSpec))
 		})
 
 		It("should retry when DNS throttling occurs", func() {

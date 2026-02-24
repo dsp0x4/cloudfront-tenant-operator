@@ -16,7 +16,7 @@ See the [Go type definitions](https://github.com/dsp0x4/cloudfront-tenant-operat
 | `customizations` | `Customizations` | No | WAF, certificate, and geo restriction overrides |
 | `managedCertificateRequest` | `ManagedCertificateRequest` | No | CloudFront-managed ACM certificate configuration |
 | `tags` | array of `Tag` | No | AWS resource tags |
-| `dns` | `DNSConfig` | No | DNS record management config (not yet implemented) |
+| `dns` | `DNSConfig` | No | DNS record management config (see below) |
 
 ### DomainSpec
 
@@ -39,13 +39,24 @@ See the [Go type definitions](https://github.com/dsp0x4/cloudfront-tenant-operat
 | `certificate` | `CertificateCustomization` | No | ACM certificate override |
 | `geoRestrictions` | `GeoRestrictionCustomization` | No | Geographic restriction override |
 
+> **Note:** ACM certificates used with CloudFront must be created in the **us-east-1** region. This is an AWS requirement.
+
 ### ManagedCertificateRequest
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `validationTokenHost` | string | Yes | Validation method: `"cloudfront"` or `"self-hosted"` |
-| `primaryDomainName` | string | No | Primary domain for the certificate |
+| `primaryDomainName` | string | Yes | Primary domain for the certificate (must be one of the `spec.domains`) |
 | `certificateTransparencyLoggingPreference` | string | No | `"enabled"` or `"disabled"` |
+
+### DNSConfig
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `provider` | string | Yes | DNS provider (`"route53"`) |
+| `hostedZoneId` | string | No | Route53 hosted zone ID where records will be managed |
+| `ttl` | int64 | No | TTL for CNAME records in seconds (60-172800, default: `300`) |
+| `assumeRoleArn` | string | No | IAM role ARN to assume for Route53 calls (cross-account DNS) |
 
 ## Status Fields
 
@@ -56,12 +67,28 @@ See the [Go type definitions](https://github.com/dsp0x4/cloudfront-tenant-operat
 | `eTag` | string | Version identifier for optimistic concurrency |
 | `distributionTenantStatus` | string | AWS deployment status (`InProgress`, `Deployed`) |
 | `observedGeneration` | int64 | Last generation successfully reconciled (used for drift detection) |
+| `createdTime` | timestamp | When the distribution tenant was created in AWS |
+| `lastModifiedTime` | timestamp | When the distribution tenant was last modified in AWS |
 | `certificateArn` | string | ARN of the associated ACM certificate |
-| `managedCertificateStatus` | string | Managed cert lifecycle status (`pending-validation`, `issued`, etc.) |
+| `managedCertificateStatus` | string | Managed cert lifecycle status (see values below) |
 | `driftDetected` | bool | Whether external drift was detected |
 | `lastDriftCheckTime` | timestamp | Timestamp of the last drift check |
+| `dnsChangeId` | string | Route53 change ID for a pending DNS record change |
+| `dnsTarget` | string | CNAME target (CloudFront endpoint) used for DNS records |
 | `domainResults` | array of `DomainResult` | Per-domain status from AWS |
 | `conditions` | array of `Condition` | Standard Kubernetes conditions |
+
+### managedCertificateStatus Values
+
+| Value | Meaning |
+|-------|---------|
+| `pending-validation` | Certificate is awaiting DNS validation |
+| `issued` | Certificate is validated and issued |
+| `inactive` | Certificate is inactive |
+| `expired` | Certificate has expired |
+| `validation-timed-out` | DNS validation timed out |
+| `revoked` | Certificate was revoked |
+| `failed` | Certificate issuance failed |
 
 ### DomainResult
 

@@ -34,3 +34,12 @@ site/
 
 # Kubeconfig might contain secrets
 *.kubeconfig
+
+# GoReleaser build output
+.goreleaser-dist/
+
+# Helm packaged archives
+dist/*.tgz
+
+# Kustomize installer bundle
+dist/install.yaml

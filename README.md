@@ -1,10 +1,16 @@
 # cloudfront-tenant-operator
 
+[![Release](https://github.com/dsp0x4/cloudfront-tenant-operator/actions/workflows/release.yml/badge.svg)](https://github.com/dsp0x4/cloudfront-tenant-operator/actions/workflows/release.yml)
+[![Tests](https://github.com/dsp0x4/cloudfront-tenant-operator/actions/workflows/test.yml/badge.svg)](https://github.com/dsp0x4/cloudfront-tenant-operator/actions/workflows/test.yml)
+[![Lint](https://github.com/dsp0x4/cloudfront-tenant-operator/actions/workflows/lint.yml/badge.svg)](https://github.com/dsp0x4/cloudfront-tenant-operator/actions/workflows/lint.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/dsp0x4/cloudfront-tenant-operator)](https://github.com/dsp0x4/cloudfront-tenant-operator/releases/latest)
+[![License](https://img.shields.io/github/license/dsp0x4/cloudfront-tenant-operator)](LICENSE)
+
 > **Work in Progress** -- This project is under active development. APIs and behavior may change without notice.
 
 A Kubernetes operator for managing [CloudFront Distribution Tenants](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/distribution-tenants.html) -- the AWS CloudFront multi-tenant content delivery feature.
 
-**[Full Documentation](https://dsp0x4.github.io/cloudfront-tenant-operator/)**
+**[Full Documentation](https://cloudfront-tenant-operator.io/)**
 
 ## What It Does
 
@@ -38,19 +44,15 @@ kubectl get distributiontenants -w
 
 ## Documentation
 
-- [Installation](https://dsp0x4.github.io/cloudfront-tenant-operator/getting-started/installation/)
-- [Quickstart](https://dsp0x4.github.io/cloudfront-tenant-operator/getting-started/quickstart/)
-- [CRD Reference](https://dsp0x4.github.io/cloudfront-tenant-operator/reference/crd/)
-- [Architecture](https://dsp0x4.github.io/cloudfront-tenant-operator/architecture/overview/)
-- [Contributing](https://dsp0x4.github.io/cloudfront-tenant-operator/contributing/)
+- [Installation](https://cloudfront-tenant-operator.io/getting-started/installation/)
+- [Quickstart](https://cloudfront-tenant-operator.io/getting-started/quickstart/)
+- [CRD Reference](https://cloudfront-tenant-operator.io/reference/crd/)
+- [Architecture](https://cloudfront-tenant-operator.io/architecture/overview/)
+- [Contributing](https://cloudfront-tenant-operator.io/contributing/)
 
-## Development
+## Disclaimer
 
-```sh
-make test              # Run tests
-make lint              # Run linter
-make manifests generate  # Regenerate CRDs after editing types
-```
+This project is not affiliated with, endorsed by, or sponsored by Amazon Web Services (AWS). All AWS service names and trademarks are the property of Amazon.com, Inc. or its affiliates.
 
 ## License
 

@@ -37,6 +37,8 @@ spec:
             - --health-probe-bind-address={{ .Values.probes.bindAddress }}
             - --metrics-bind-address={{ .Values.metrics.bindAddress }}
             - --metrics-secure={{ .Values.metrics.secure }}
+            - --drift-policy={{ .Values.controller.driftPolicy }}
+            - --max-concurrent-reconciles={{ .Values.controller.maxConcurrentReconciles }}
             {{- if .Values.aws.region }}
             - --aws-region={{ .Values.aws.region }}
             {{- end }}

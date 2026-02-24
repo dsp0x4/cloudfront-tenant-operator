@@ -17,6 +17,7 @@ internal/aws/
   mock.go                                # Mock clients for testing
 internal/metrics/
   metrics.go                             # Prometheus metric definitions
+  tenant_collector.go                    # prometheus.Collector for tenant counts
 ```
 
 ## Reconciliation Flow
@@ -45,6 +46,7 @@ Errors from the AWS API are classified into categories that determine retry beha
 | Category | Examples | Behavior |
 |----------|----------|----------|
 | **Terminal** | `CNAMEAlreadyExists`, `AccessDenied`, `InvalidArgument` | Set condition, stop retrying, requeue after 5 min |
+| **Domain validation pending** | `InvalidArgument` when `validationTokenHost=cloudfront` | Set `DomainValidationPending` condition, retry every 5 min (see below) |
 | **Terminal (DNS)** | `NoSuchHostedZone`, DNS `AccessDenied`, `InvalidChangeBatch`, `ConnectionGroupNotFound` | Set DNSReady=False condition, stop retrying |
 | **Terminal (Cert)** | Certificate SAN mismatch (domains not covered) | Set Ready=False with `CertificateSANMismatch` reason |
 | **Throttling** | `Throttling`, `TooManyRequests` | Requeue with 60s backoff |
@@ -52,6 +54,8 @@ Errors from the AWS API are classified into categories that determine retry beha
 | **ETag mismatch** | `PreconditionFailed` | Re-fetch and retry via rate limiter (no error metric) |
 | **Retryable** | 5xx errors, network errors | Return error for controller-runtime backoff |
 | **Validation** | Name too short, missing certificate, missing parameters | Set condition with specific message, requeue after 5 min |
+
+**Domain validation pending**: When `CreateDistributionTenant` fails with `InvalidArgument` and the tenant uses `managedCertificateRequest.validationTokenHost: "cloudfront"`, the error is treated as a transient DNS propagation delay instead of terminal. CloudFront requires the CNAME to be globally resolvable before it can serve the HTTP validation token, but Route53 `INSYNC` only guarantees authoritative nameserver updates -- global recursive resolver caches may lag by minutes to hours. This applies to both operator-managed DNS (`spec.dns` configured) and user-managed DNS. The operator sets `Ready=False` with reason `DomainValidationPending` and retries every 5 minutes until the create succeeds.
 
 All AWS errors preserve the original error message from the API response, so users see the exact reason for failure in the status conditions.
 
@@ -78,6 +82,7 @@ When `spec.dns` is configured, the operator manages CNAME records in Route53 tha
 | `DNSReady` | `False` | `DNSPropagating` | Waiting for Route53 change to reach INSYNC |
 | `DNSReady` | `False` | `DNSError` | A terminal DNS error occurred (check message) |
 | `Ready` | `False` | `CertificateSANMismatch` | The ACM certificate's SANs don't cover the tenant's domains |
+| `Ready` | `False` | `DomainValidationPending` | CloudFront cannot verify domain ownership yet (DNS propagation delay); retrying |
 
 ### Cross-Account DNS
 
@@ -89,18 +94,34 @@ The operator's IAM identity (or the assumed role for DNS) needs the following AW
 
 | Permission | Resource | Used for |
 |-----------|----------|----------|
-| `route53:ChangeResourceRecordSets` | Hosted zone ARN | Creating and deleting CNAME records |
-| `route53:GetChange` | `*` | Polling for record propagation |
-| `acm:DescribeCertificate` | Certificate ARN | Validating certificate SANs cover tenant domains |
-| `sts:AssumeRole` | Role ARN from `assumeRoleArn` | Cross-account Route53 access (only when configured) |
-| `cloudfront:GetConnectionGroup` | `*` | Resolving a specific connection group's routing endpoint |
+| `cloudfront:CreateDistributionTenant` | `*` | Creating tenants |
+| `cloudfront:GetDistributionTenant` | `*` | Reading tenant state |
+| `cloudfront:UpdateDistributionTenant` | `*` | Updating tenants |
+| `cloudfront:DeleteDistributionTenant` | `*` | Deleting tenants |
+| `cloudfront:GetDistribution` | `*` | Reading distribution config |
+| `cloudfront:GetManagedCertificateDetails` | `*` | Managed certificate lifecycle |
+| `cloudfront:GetConnectionGroup` | `*` | Resolving a connection group's routing endpoint |
 | `cloudfront:ListConnectionGroups` | `*` | Finding the default connection group's routing endpoint |
-| `cloudfront:CreateDistributionTenant` | `*` | Creating tenants (existing requirement) |
-| `cloudfront:GetDistributionTenant` | `*` | Reading tenant state (existing requirement) |
-| `cloudfront:UpdateDistributionTenant` | `*` | Updating tenants (existing requirement) |
-| `cloudfront:DeleteDistributionTenant` | `*` | Deleting tenants (existing requirement) |
-| `cloudfront:GetDistribution` | `*` | Reading distribution config (existing requirement) |
-| `cloudfront:GetManagedCertificateDetails` | `*` | Managed certificate lifecycle (existing requirement) |
+| `acm:RequestCertificate` | `*` | Requesting managed ACM certificates |
+| `acm:DescribeCertificate` | Certificate ARN | Validating certificate SANs cover tenant domains |
+| `route53:ChangeResourceRecordSets` | Hosted zone ARN | Creating and deleting CNAME records (DNS only) |
+| `route53:GetChange` | `*` | Polling for record propagation (DNS only) |
+| `sts:AssumeRole` | Role ARN from `assumeRoleArn` | Cross-account Route53 access (only when configured) |
+
+## CLI Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--metrics-bind-address` | `0` | Address the metrics endpoint binds to (`:8443` for HTTPS, `:8080` for HTTP, `0` to disable) |
+| `--health-probe-bind-address` | `:8081` | Address the health/ready probe endpoint binds to |
+| `--leader-elect` | `false` | Enable leader election (required for HA deployments) |
+| `--aws-region` | *(SDK default)* | AWS region for API calls; falls back to env vars / config file / IMDS |
+| `--drift-policy` | `enforce` | How to handle external drift: `enforce`, `report`, or `suspend` |
+| `--max-concurrent-reconciles` | `1` | Maximum number of concurrent reconcile loops |
+| `--metrics-secure` | `true` | Serve metrics over HTTPS (`false` for HTTP) |
+| `--metrics-cert-path` | *(empty)* | Directory containing TLS cert/key for the metrics server |
+| `--webhook-cert-path` | *(empty)* | Directory containing TLS cert/key for the webhook server |
+| `--enable-http2` | `false` | Enable HTTP/2 for metrics and webhook servers |
 
 ## Prometheus Metrics
 
@@ -108,7 +129,7 @@ The operator's IAM identity (or the assumed role for DNS) needs the following AW
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `cloudfront_tenant_operator_reconcile_errors_total` | Counter | `error_type` | Incremented once per AWS API error classified by `handleAWSError` or `handleDNSError`. **Label values:** `error_type` is one of `domain_conflict`, `access_denied`, `invalid_spec`, `connection_group_not_found` (CloudFront terminal), `dns_zone_not_found`, `dns_access_denied`, `dns_invalid_input`, `dns_error` (DNS terminal), `throttling`, `dns_throttling` (rate limited), `retryable`, or `dns_retryable`. Not incremented for spec validation failures or Kubernetes API errors. |
+| `cloudfront_tenant_operator_reconcile_errors_total` | Counter | `error_type` | Incremented once per AWS API error classified by `handleAWSError`, `handleDNSError`, or `handleDomainValidationPending`. **Label values:** `error_type` is one of `domain_conflict`, `access_denied`, `invalid_spec`, `connection_group_not_found` (CloudFront terminal), `domain_validation_pending` (DNS propagation delay with cloudfront-hosted validation), `dns_zone_not_found`, `dns_access_denied`, `dns_invalid_input`, `dns_error` (DNS terminal), `throttling`, `dns_throttling` (rate limited), `retryable`, or `dns_retryable`. Not incremented for spec validation failures or Kubernetes API errors. |
 | `cloudfront_tenant_operator_tenants_total` | Gauge | `namespace`, `status` | Current number of DistributionTenant resources per namespace. Implemented as a `prometheus.Collector` (kube-state-metrics / cert-manager pattern): the count is computed from the informer cache at Prometheus scrape time, not during reconciliation, so it is never stale and adds zero overhead to the reconcile loop. **Label values:** `status` is `Ready` (Ready condition is True) or `NotReady` (Ready condition is False or absent). |
 | `cloudfront_tenant_operator_drift_detected_total` | Counter | *(none)* | Incremented once each time `handleDrift` fires, regardless of the configured drift policy (enforce, report, or suspend). Provides an aggregate signal for alerting on external AWS drift. Per-resource drift details are available via the `Synced` condition and `status.driftDetected` field. |
 | `cloudfront_tenant_operator_aws_api_call_duration_seconds` | Histogram | `operation` | Wall-clock duration of each AWS SDK call. Recorded for both successful and failed calls. **Label values:** `operation` is one of `CreateDistributionTenant`, `GetDistributionTenant`, `UpdateDistributionTenant`, `DeleteDistributionTenant`, `GetDistribution`, `GetManagedCertificateDetails`, `GetConnectionGroup`, `ListConnectionGroups`, `Route53ChangeResourceRecordSets`, `Route53GetChange`, `ACMDescribeCertificate`. |

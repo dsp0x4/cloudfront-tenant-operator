@@ -12,18 +12,28 @@ The Kubernetes resource name (`metadata.name`) is used as the CloudFront tenant 
 
 ### Minimal Example
 
+> **Note:** This minimal example does not specify a certificate. It only works if the domain is already covered by the default certificate of the parent distribution. Otherwise, add a `customizations.certificate` or a `managedCertificateRequest` to the spec.
+
 ```yaml
 apiVersion: cloudfront-tenant-operator.io/v1alpha1
 kind: DistributionTenant
 metadata:
-  name: my-tenant
+  name: my-tenant-minimal
 spec:
   distributionId: "E1XNX8R2GOAABC"
   domains:
-    - domain: "my-tenant.example.com"
+    - domain: "minimal.example.com"
+```
+
+Apply the minimal sample:
+
+```sh
+kubectl apply -f config/samples/cloudfront_v1alpha1_distributiontenant.yaml
 ```
 
 ### Full Example
+
+The full example shows all available spec fields. See `config/samples/cloudfront_v1alpha1_distributiontenant_full.yaml`:
 
 ```yaml
 apiVersion: cloudfront-tenant-operator.io/v1alpha1
@@ -62,11 +72,7 @@ spec:
       value: "platform"
 ```
 
-Apply the resource:
-
-```sh
-kubectl apply -f config/samples/cloudfront_v1alpha1_distributiontenant.yaml
-```
+Additional samples are available for [DNS management](https://github.com/dsp0x4/cloudfront-tenant-operator/tree/main/config/samples/cloudfront_v1alpha1_distributiontenant_with_dns.yaml) and [managed certificates](https://github.com/dsp0x4/cloudfront-tenant-operator/tree/main/config/samples/cloudfront_v1alpha1_distributiontenant_managed_cert.yaml).
 
 ## Monitor Status
 
