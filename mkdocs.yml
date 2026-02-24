@@ -1,5 +1,5 @@
 site_name: CloudFront Tenant Operator
-site_url: https://dsp0x4.github.io/cloudfront-tenant-operator/
+site_url: https://cloudfront-tenant-operator.io/
 site_description: A Kubernetes operator for managing CloudFront Distribution Tenants
 repo_name: dsp0x4/cloudfront-tenant-operator
 repo_url: https://github.com/dsp0x4/cloudfront-tenant-operator
