@@ -101,7 +101,8 @@ func (r *DistributionTenantReconciler) Reconcile(ctx context.Context, req ctrl.R
 		if err := r.Update(ctx, &tenant); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
+		// The metadata update triggers a watch event that requeues automatically.
+		return ctrl.Result{}, nil
 	}
 
 	// 4. Create or update
@@ -278,7 +279,6 @@ func (r *DistributionTenantReconciler) cleanupDNSRecords(ctx context.Context, te
 // status.dnsTarget, following the "at most one K8s write per reconcile" rule.
 func (r *DistributionTenantReconciler) reconcileCreate(ctx context.Context, tenant *cloudfrontv1alpha1.DistributionTenant) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
-	log.Info("Creating distribution tenant in AWS", "name", tenant.Name)
 
 	// Validate spec against distribution configuration before calling AWS
 	if res, err, handled := r.validateSpec(ctx, tenant); handled {
@@ -296,6 +296,7 @@ func (r *DistributionTenantReconciler) reconcileCreate(ctx context.Context, tena
 	}
 
 	// DNS is ready (or not configured) -- create the CloudFront tenant.
+	log.Info("Creating distribution tenant in AWS", "name", tenant.Name)
 	input := buildCreateInput(tenant)
 	out, err := r.CFClient.CreateDistributionTenant(ctx, input)
 	if err != nil {
@@ -877,13 +878,16 @@ func (r *DistributionTenantReconciler) handleDomainValidationPending(ctx context
 // metric label explicitly.
 func (r *DistributionTenantReconciler) handleTerminalError(ctx context.Context, tenant *cloudfrontv1alpha1.DistributionTenant, err error, operation, reason, errorType string) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
+	msg := fmt.Sprintf("AWS %s failed: %v", operation, err)
+
+	if conditionMatches(tenant, cloudfrontv1alpha1.ConditionTypeReady, metav1.ConditionFalse, reason, msg) {
+		return ctrl.Result{RequeueAfter: requeueLong}, nil
+	}
 
 	log.Error(err, "Encountered terminal AWS error", "operation", operation, "reason", reason)
 	cfmetrics.ReconcileErrors.WithLabelValues(errorType).Inc()
-	setCondition(tenant, cloudfrontv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
-		reason, fmt.Sprintf("AWS %s failed: %v", operation, err))
-	setCondition(tenant, cloudfrontv1alpha1.ConditionTypeSynced, metav1.ConditionFalse,
-		reason, fmt.Sprintf("AWS %s failed: %v", operation, err))
+	setCondition(tenant, cloudfrontv1alpha1.ConditionTypeReady, metav1.ConditionFalse, reason, msg)
+	setCondition(tenant, cloudfrontv1alpha1.ConditionTypeSynced, metav1.ConditionFalse, reason, msg)
 	if statusErr := r.Status().Update(ctx, tenant); statusErr != nil {
 		log.Error(statusErr, "Failed to update status after terminal AWS error")
 		return ctrl.Result{}, statusErr
@@ -1027,6 +1031,12 @@ func (r *DistributionTenantReconciler) validateSpec(ctx context.Context, tenant 
 
 	if len(validationErrors) > 0 {
 		msg := fmt.Sprintf("Spec validation failed: %s", strings.Join(validationErrors, "; "))
+
+		if conditionMatches(tenant, cloudfrontv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
+			cloudfrontv1alpha1.ReasonValidationFailed, msg) {
+			return ctrl.Result{RequeueAfter: requeueLong}, nil, true
+		}
+
 		log.Info("Spec validation failed", "errors", validationErrors)
 		r.recordEvent(tenant, "Warning", cloudfrontv1alpha1.ReasonValidationFailed, msg)
 		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
@@ -1037,7 +1047,6 @@ func (r *DistributionTenantReconciler) validateSpec(ctx context.Context, tenant 
 			log.Error(statusErr, "Failed to update status after validation failure")
 			return ctrl.Result{}, statusErr, true
 		}
-		// Don't requeue aggressively; the user needs to fix the spec.
 		return ctrl.Result{RequeueAfter: requeueLong}, nil, true
 	}
 
@@ -1355,6 +1364,18 @@ func setCondition(tenant *cloudfrontv1alpha1.DistributionTenant, condType string
 		Reason:             reason,
 		Message:            message,
 	})
+}
+
+// conditionMatches returns true if the named condition already has the given
+// status, reason, and message for the current generation. This is used to
+// skip redundant status updates that would trigger unnecessary watch events.
+func conditionMatches(tenant *cloudfrontv1alpha1.DistributionTenant, condType string, status metav1.ConditionStatus, reason, message string) bool {
+	existing := meta.FindStatusCondition(tenant.Status.Conditions, condType)
+	return existing != nil &&
+		existing.Status == status &&
+		existing.Reason == reason &&
+		existing.Message == message &&
+		existing.ObservedGeneration == tenant.Generation
 }
 
 // Spec-to-AWS conversion helpers
