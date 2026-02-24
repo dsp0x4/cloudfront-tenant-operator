@@ -1000,7 +1000,7 @@ func (r *DistributionTenantReconciler) validateSpec(ctx context.Context, tenant 
 		// pointed to CloudFront. We can't verify DNS, but we set a clear message.
 		if tenant.Spec.ManagedCertificateRequest != nil &&
 			tenant.Spec.ManagedCertificateRequest.ValidationTokenHost == validationTokenHostCloudFront {
-			log.Info("Managed certificate uses cloudfront validation: domain(s) must already have DNS CNAME pointing to CloudFront",
+			log.V(1).Info("Managed certificate uses cloudfront validation: domain(s) must already have DNS CNAME pointing to CloudFront",
 				"domains", domainsToStrings(tenant.Spec.Domains))
 		}
 
