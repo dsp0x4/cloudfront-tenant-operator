@@ -302,10 +302,6 @@ func (r *DistributionTenantReconciler) reconcileCreate(ctx context.Context, tena
 		if r.isDomainValidationPending(tenant, err) {
 			return r.handleDomainValidationPending(ctx, tenant, err)
 		}
-		if cfaws.IsNotFound(err) {
-			return r.handleTerminalError(ctx, tenant, err, "create",
-				cloudfrontv1alpha1.ReasonInvalidSpec, "not_found")
-		}
 		return r.handleAWSError(ctx, tenant, err, "create")
 	}
 
@@ -914,6 +910,9 @@ func (r *DistributionTenantReconciler) handleAWSError(ctx context.Context, tenan
 		case errors.Is(err, cfaws.ErrInvalidArgument):
 			reason = cloudfrontv1alpha1.ReasonInvalidSpec
 			errorType = "invalid_spec"
+		case errors.Is(err, cfaws.ErrDistributionNotFound):
+			reason = cloudfrontv1alpha1.ReasonInvalidSpec
+			errorType = "distribution_not_found"
 		case errors.Is(err, cfaws.ErrConnectionGroupNotFound):
 			reason = cloudfrontv1alpha1.ReasonInvalidSpec
 			errorType = "connection_group_not_found"
@@ -955,15 +954,18 @@ func (r *DistributionTenantReconciler) validateSpec(ctx context.Context, tenant 
 
 	distInfo, err := r.CFClient.GetDistributionInfo(ctx, tenant.Spec.DistributionId)
 	if err != nil {
-		// If we can't fetch distribution info, log a warning but let the
-		// request proceed -- the AWS API will catch any real errors.
-		log.Error(err, "Failed to fetch distribution info for validation; proceeding without local validation",
-			"distributionId", tenant.Spec.DistributionId)
-		if len(validationErrors) == 0 {
-			return ctrl.Result{}, nil, false
+		if errors.Is(err, cfaws.ErrDistributionNotFound) {
+			validationErrors = append(validationErrors,
+				fmt.Sprintf("distribution %q not found: verify spec.distributionId", tenant.Spec.DistributionId))
+		} else {
+			// For transient errors (network, throttling), skip local validation
+			// and let the AWS API catch any real errors.
+			log.Error(err, "Failed to fetch distribution info for validation; proceeding without local validation",
+				"distributionId", tenant.Spec.DistributionId)
+			if len(validationErrors) == 0 {
+				return ctrl.Result{}, nil, false
+			}
 		}
-		// Fall through to report the name validation error even if we can't
-		// fetch distribution info.
 	}
 
 	// The following checks require distribution info from AWS. Skip them if

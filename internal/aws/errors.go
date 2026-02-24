@@ -46,6 +46,9 @@ var (
 	// ErrNotFound indicates the distribution tenant does not exist in AWS.
 	ErrNotFound = errors.New("distribution tenant not found")
 
+	// ErrDistributionNotFound indicates the parent distribution does not exist.
+	ErrDistributionNotFound = errors.New("distribution not found: check spec.distributionId")
+
 	// ErrResourceNotDisabled indicates a delete was attempted on an enabled tenant.
 	ErrResourceNotDisabled = errors.New("resource must be disabled before deletion")
 
@@ -82,6 +85,7 @@ func IsTerminalError(err error) bool {
 	return errors.Is(err, ErrDomainConflict) ||
 		errors.Is(err, ErrAccessDenied) ||
 		errors.Is(err, ErrInvalidArgument) ||
+		errors.Is(err, ErrDistributionNotFound) ||
 		errors.Is(err, ErrHostedZoneNotFound) ||
 		errors.Is(err, ErrDNSAccessDenied) ||
 		errors.Is(err, ErrDNSInvalidInput) ||
@@ -132,6 +136,8 @@ func classifyAWSError(err error) error {
 			return fmt.Errorf("%w: %s", ErrInvalidArgument, msg)
 		case code == "EntityNotFound" || code == "NoSuchDistributionTenant":
 			return fmt.Errorf("%w: %s", ErrNotFound, msg)
+		case code == "NoSuchDistribution":
+			return fmt.Errorf("%w: %s", ErrDistributionNotFound, msg)
 		case code == "ResourceNotDisabled":
 			return fmt.Errorf("%w: %s", ErrResourceNotDisabled, msg)
 		case code == "PreconditionFailed" || code == "InvalidIfMatchVersion":
