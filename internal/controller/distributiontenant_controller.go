@@ -302,6 +302,10 @@ func (r *DistributionTenantReconciler) reconcileCreate(ctx context.Context, tena
 		if r.isDomainValidationPending(tenant, err) {
 			return r.handleDomainValidationPending(ctx, tenant, err)
 		}
+		if cfaws.IsNotFound(err) {
+			return r.handleTerminalError(ctx, tenant, err, "create",
+				cloudfrontv1alpha1.ReasonInvalidSpec, "not_found")
+		}
 		return r.handleAWSError(ctx, tenant, err, "create")
 	}
 
@@ -871,6 +875,27 @@ func (r *DistributionTenantReconciler) handleDomainValidationPending(ctx context
 	return ctrl.Result{RequeueAfter: requeueLong}, nil
 }
 
+// handleTerminalError persists a terminal error condition and stops retrying.
+// Use this when the caller has already determined the error is terminal
+// (e.g., ErrNotFound during create) and wants to specify the reason and
+// metric label explicitly.
+func (r *DistributionTenantReconciler) handleTerminalError(ctx context.Context, tenant *cloudfrontv1alpha1.DistributionTenant, err error, operation, reason, errorType string) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	log.Error(err, "Encountered terminal AWS error", "operation", operation, "reason", reason)
+	cfmetrics.ReconcileErrors.WithLabelValues(errorType).Inc()
+	setCondition(tenant, cloudfrontv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
+		reason, fmt.Sprintf("AWS %s failed: %v", operation, err))
+	setCondition(tenant, cloudfrontv1alpha1.ConditionTypeSynced, metav1.ConditionFalse,
+		reason, fmt.Sprintf("AWS %s failed: %v", operation, err))
+	if statusErr := r.Status().Update(ctx, tenant); statusErr != nil {
+		log.Error(statusErr, "Failed to update status after terminal AWS error")
+		return ctrl.Result{}, statusErr
+	}
+	r.recordEvent(tenant, "Warning", reason, fmt.Sprintf("Terminal error during %s: %v", operation, err))
+	return ctrl.Result{RequeueAfter: requeueLong}, nil
+}
+
 // handleAWSError classifies AWS errors into terminal (set condition, don't retry)
 // and retryable (return error for requeue with backoff).
 func (r *DistributionTenantReconciler) handleAWSError(ctx context.Context, tenant *cloudfrontv1alpha1.DistributionTenant, err error, operation string) (ctrl.Result, error) {
@@ -893,23 +918,7 @@ func (r *DistributionTenantReconciler) handleAWSError(ctx context.Context, tenan
 			reason = cloudfrontv1alpha1.ReasonInvalidSpec
 			errorType = "connection_group_not_found"
 		}
-
-		log.Error(err, "Encountered terminal AWS error", "operation", operation, "reason", reason)
-		cfmetrics.ReconcileErrors.WithLabelValues(errorType).Inc()
-		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
-			reason, fmt.Sprintf("AWS %s failed: %v", operation, err))
-		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeSynced, metav1.ConditionFalse,
-			reason, fmt.Sprintf("AWS %s failed: %v", operation, err))
-		if statusErr := r.Status().Update(ctx, tenant); statusErr != nil {
-			// If we can't persist the terminal error condition, return the
-			// status update error so the reconcile retries with a fresh object.
-			log.Error(statusErr, "Failed to update status after terminal AWS error")
-			return ctrl.Result{}, statusErr
-		}
-		r.recordEvent(tenant, "Warning", reason, fmt.Sprintf("Terminal error during %s: %v", operation, err))
-		// Don't return the AWS error: terminal errors should not be requeued.
-		// The periodic resync (requeueLong) will re-check later.
-		return ctrl.Result{RequeueAfter: requeueLong}, nil
+		return r.handleTerminalError(ctx, tenant, err, operation, reason, errorType)
 	}
 
 	if cfaws.IsThrottling(err) {

@@ -35,3 +35,7 @@ Planned features:
 - [Quickstart](getting-started/quickstart.md) -- Create your first distribution tenant
 - [CRD Reference](reference/crd.md) -- Full spec and status field documentation
 - [Architecture](architecture/overview.md) -- How the reconciliation loop works
+
+## Disclaimer
+
+This project is not affiliated with, endorsed by, or sponsored by Amazon Web Services (AWS). All AWS service names and trademarks are the property of Amazon.com, Inc. or its affiliates.
