@@ -25,8 +25,7 @@ import (
 	cfaws "github.com/dsp0x4/cloudfront-tenant-operator/internal/aws"
 )
 
-func boolPtr(b bool) *bool    { return &b }
-func strPtr(s string) *string { return &s }
+func strPtr(s string) *string { return new(s) }
 
 func TestValidateDriftPolicy(t *testing.T) {
 	valid := []string{"enforce", "report", "suspend"}
@@ -152,7 +151,7 @@ func TestSpecMatchesAWS(t *testing.T) {
 			spec: cloudfrontv1alpha1.DistributionTenantSpec{
 				DistributionId: "E123",
 				Domains:        []cloudfrontv1alpha1.DomainSpec{{Domain: "a.com"}},
-				Enabled:        boolPtr(true),
+				Enabled:        new(true),
 			},
 			aws: cfaws.DistributionTenantOutput{
 				DistributionId: "E123",
@@ -168,7 +167,7 @@ func TestSpecMatchesAWS(t *testing.T) {
 				Domains: []cloudfrontv1alpha1.DomainSpec{
 					{Domain: "b.com"}, {Domain: "a.com"},
 				},
-				Enabled: boolPtr(true),
+				Enabled: new(true),
 			},
 			aws: cfaws.DistributionTenantOutput{
 				DistributionId: "E123",
@@ -184,7 +183,7 @@ func TestSpecMatchesAWS(t *testing.T) {
 			spec: cloudfrontv1alpha1.DistributionTenantSpec{
 				DistributionId: "E123",
 				Domains:        []cloudfrontv1alpha1.DomainSpec{{Domain: "a.com"}},
-				Enabled:        boolPtr(true),
+				Enabled:        new(true),
 			},
 			aws: cfaws.DistributionTenantOutput{
 				DistributionId: "E123",
@@ -200,7 +199,7 @@ func TestSpecMatchesAWS(t *testing.T) {
 			spec: cloudfrontv1alpha1.DistributionTenantSpec{
 				DistributionId: "E123",
 				Domains:        []cloudfrontv1alpha1.DomainSpec{{Domain: "a.com"}},
-				Enabled:        boolPtr(true),
+				Enabled:        new(true),
 			},
 			aws: cfaws.DistributionTenantOutput{
 				DistributionId: "E123",
@@ -228,7 +227,7 @@ func TestSpecMatchesAWS(t *testing.T) {
 			spec: cloudfrontv1alpha1.DistributionTenantSpec{
 				DistributionId: "E123",
 				Domains:        []cloudfrontv1alpha1.DomainSpec{{Domain: "a.com"}},
-				Enabled:        boolPtr(true),
+				Enabled:        new(true),
 				Parameters: []cloudfrontv1alpha1.Parameter{
 					{Name: "origin", Value: "api.example.com"},
 					{Name: "ttl", Value: "300"},
@@ -250,7 +249,7 @@ func TestSpecMatchesAWS(t *testing.T) {
 			spec: cloudfrontv1alpha1.DistributionTenantSpec{
 				DistributionId: "E123",
 				Domains:        []cloudfrontv1alpha1.DomainSpec{{Domain: "a.com"}},
-				Enabled:        boolPtr(true),
+				Enabled:        new(true),
 				Parameters:     []cloudfrontv1alpha1.Parameter{{Name: "ttl", Value: "300"}},
 			},
 			aws: cfaws.DistributionTenantOutput{
@@ -266,8 +265,8 @@ func TestSpecMatchesAWS(t *testing.T) {
 			spec: cloudfrontv1alpha1.DistributionTenantSpec{
 				DistributionId:    "E123",
 				Domains:           []cloudfrontv1alpha1.DomainSpec{{Domain: "a.com"}},
-				Enabled:           boolPtr(true),
-				ConnectionGroupId: strPtr("cg-123"),
+				Enabled:           new(true),
+				ConnectionGroupId: new("cg-123"),
 			},
 			aws: cfaws.DistributionTenantOutput{
 				DistributionId:    "E123",
@@ -282,7 +281,7 @@ func TestSpecMatchesAWS(t *testing.T) {
 			spec: cloudfrontv1alpha1.DistributionTenantSpec{
 				DistributionId: "E123",
 				Domains:        []cloudfrontv1alpha1.DomainSpec{{Domain: "a.com"}},
-				Enabled:        boolPtr(true),
+				Enabled:        new(true),
 				Customizations: &cloudfrontv1alpha1.Customizations{
 					Certificate: &cloudfrontv1alpha1.CertificateCustomization{
 						Arn: "arn:aws:acm:us-east-1:123:certificate/abc",
@@ -306,7 +305,7 @@ func TestSpecMatchesAWS(t *testing.T) {
 			spec: cloudfrontv1alpha1.DistributionTenantSpec{
 				DistributionId: "E123",
 				Domains:        []cloudfrontv1alpha1.DomainSpec{{Domain: "a.com"}},
-				Enabled:        boolPtr(true),
+				Enabled:        new(true),
 				Customizations: &cloudfrontv1alpha1.Customizations{
 					WebAcl: &cloudfrontv1alpha1.WebAclCustomization{Action: "disable"},
 				},
@@ -324,7 +323,7 @@ func TestSpecMatchesAWS(t *testing.T) {
 			spec: cloudfrontv1alpha1.DistributionTenantSpec{
 				DistributionId: "E123",
 				Domains:        []cloudfrontv1alpha1.DomainSpec{{Domain: "a.com"}},
-				Enabled:        boolPtr(true),
+				Enabled:        new(true),
 				Customizations: &cloudfrontv1alpha1.Customizations{
 					GeoRestrictions: &cloudfrontv1alpha1.GeoRestrictionCustomization{
 						RestrictionType: "whitelist",
@@ -350,7 +349,7 @@ func TestSpecMatchesAWS(t *testing.T) {
 			spec: cloudfrontv1alpha1.DistributionTenantSpec{
 				DistributionId: "E123",
 				Domains:        []cloudfrontv1alpha1.DomainSpec{{Domain: "a.com"}},
-				Enabled:        boolPtr(true),
+				Enabled:        new(true),
 				ManagedCertificateRequest: &cloudfrontv1alpha1.ManagedCertificateRequest{
 					ValidationTokenHost: "cloudfront",
 					PrimaryDomainName:   "a.com",
@@ -378,7 +377,7 @@ func TestSpecMatchesAWS(t *testing.T) {
 			spec: cloudfrontv1alpha1.DistributionTenantSpec{
 				DistributionId: "E123",
 				Domains:        []cloudfrontv1alpha1.DomainSpec{{Domain: "a.com"}},
-				Enabled:        boolPtr(true),
+				Enabled:        new(true),
 				ManagedCertificateRequest: &cloudfrontv1alpha1.ManagedCertificateRequest{
 					ValidationTokenHost: "cloudfront",
 					PrimaryDomainName:   "a.com",
