@@ -1,6 +1,6 @@
 module github.com/dsp0x4/cloudfront-tenant-operator
 
-go 1.25.3
+go 1.26.0
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.41.1

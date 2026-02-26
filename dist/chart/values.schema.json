@@ -1,0 +1,236 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "replicaCount": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 1,
+      "description": "Number of controller replicas."
+    },
+    "image": {
+      "type": "object",
+      "properties": {
+        "repository": {
+          "type": "string",
+          "default": "ghcr.io/dsp0x4/cloudfront-tenant-operator",
+          "description": "Controller container image repository."
+        },
+        "tag": {
+          "type": "string",
+          "default": "",
+          "description": "Controller container image tag. Defaults to the chart appVersion."
+        },
+        "pullPolicy": {
+          "type": "string",
+          "enum": ["Always", "IfNotPresent", "Never"],
+          "default": "IfNotPresent",
+          "description": "Image pull policy."
+        }
+      },
+      "additionalProperties": false
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": ["name"]
+      },
+      "default": [],
+      "description": "Secrets for pulling images from private registries."
+    },
+    "nameOverride": {
+      "type": "string",
+      "default": "",
+      "description": "Override the chart name."
+    },
+    "fullnameOverride": {
+      "type": "string",
+      "default": "",
+      "description": "Override the full release name."
+    },
+    "aws": {
+      "type": "object",
+      "properties": {
+        "region": {
+          "type": "string",
+          "default": "us-east-1",
+          "description": "AWS region for CloudFront API calls. If empty, uses SDK default resolution (env vars, config file, IMDS)."
+        }
+      },
+      "additionalProperties": false
+    },
+    "controller": {
+      "type": "object",
+      "properties": {
+        "driftPolicy": {
+          "type": "string",
+          "enum": ["enforce", "report", "suspend"],
+          "default": "enforce",
+          "description": "How to handle external drift on AWS resources. 'enforce' overwrites AWS with the K8s spec, 'report' logs and sets conditions, 'suspend' skips drift detection."
+        },
+        "maxConcurrentReconciles": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1,
+          "description": "Maximum number of concurrent reconcile loops. Higher values improve throughput but increase AWS API usage."
+        }
+      },
+      "additionalProperties": false
+    },
+    "leaderElection": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable leader election to ensure only one controller instance is active."
+        }
+      },
+      "additionalProperties": false
+    },
+    "metrics": {
+      "type": "object",
+      "properties": {
+        "bindAddress": {
+          "type": "string",
+          "default": ":8443",
+          "description": "Bind address for the metrics endpoint. Set to '0' to disable."
+        },
+        "secure": {
+          "type": "boolean",
+          "default": true,
+          "description": "Serve metrics over HTTPS."
+        }
+      },
+      "additionalProperties": false
+    },
+    "probes": {
+      "type": "object",
+      "properties": {
+        "bindAddress": {
+          "type": "string",
+          "default": ":8081",
+          "description": "Bind address for health and readiness probes."
+        }
+      },
+      "additionalProperties": false
+    },
+    "serviceAccount": {
+      "type": "object",
+      "properties": {
+        "create": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to create a service account."
+        },
+        "annotations": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Annotations to add to the service account (e.g., for IRSA). Not needed when using EKS Pod Identity."
+        },
+        "name": {
+          "type": "string",
+          "default": "",
+          "description": "The name of the service account. If not set, a name is generated using the fullname template."
+        }
+      },
+      "additionalProperties": false
+    },
+    "resources": {
+      "type": "object",
+      "properties": {
+        "limits": {
+          "type": "object",
+          "properties": {
+            "cpu": {
+              "type": "string",
+              "default": "500m"
+            },
+            "memory": {
+              "type": "string",
+              "default": "128Mi"
+            }
+          },
+          "additionalProperties": false
+        },
+        "requests": {
+          "type": "object",
+          "properties": {
+            "cpu": {
+              "type": "string",
+              "default": "10m"
+            },
+            "memory": {
+              "type": "string",
+              "default": "64Mi"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false,
+      "description": "CPU and memory resource requests and limits for the controller container."
+    },
+    "nodeSelector": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {},
+      "description": "Node selector for pod scheduling."
+    },
+    "tolerations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "key": { "type": "string" },
+          "operator": { "type": "string", "enum": ["Exists", "Equal"] },
+          "value": { "type": "string" },
+          "effect": { "type": "string", "enum": ["NoSchedule", "PreferNoSchedule", "NoExecute"] },
+          "tolerationSeconds": { "type": "integer" }
+        }
+      },
+      "default": [],
+      "description": "Tolerations for pod scheduling."
+    },
+    "affinity": {
+      "type": "object",
+      "default": {},
+      "description": "Affinity rules for pod scheduling."
+    },
+    "extraEnv": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Environment variable name."
+          },
+          "value": {
+            "type": "string",
+            "description": "Environment variable value."
+          },
+          "valueFrom": {
+            "type": "object",
+            "description": "Source for the environment variable value."
+          }
+        },
+        "required": ["name"]
+      },
+      "default": [],
+      "description": "Additional environment variables for the controller container."
+    }
+  },
+  "additionalProperties": false
+}
