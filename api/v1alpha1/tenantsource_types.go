@@ -57,6 +57,14 @@ type TenantSourceSpec struct {
 	// +optional
 	TargetNamespace *string `json:"targetNamespace,omitempty"`
 
+	// managedCertificateRequest configures a CloudFront-managed ACM certificate
+	// for all tenants created by this source. The primaryDomainName is
+	// automatically set to each tenant's domain. If a DynamoDB item provides a
+	// certificateArn (via certificateArnAttribute), it takes precedence and
+	// the managed certificate is not used for that tenant.
+	// +optional
+	ManagedCertificateRequest *TenantSourceManagedCertificateRequest `json:"managedCertificateRequest,omitempty"`
+
 	// dryRun when true prevents the operator from creating or modifying
 	// DistributionTenant CRs. Instead, it logs what would be changed and
 	// updates status with a plan of pending changes. This is useful for
@@ -64,6 +72,24 @@ type TenantSourceSpec struct {
 	// +optional
 	// +kubebuilder:default=false
 	DryRun *bool `json:"dryRun,omitempty"`
+}
+
+// TenantSourceManagedCertificateRequest configures a CloudFront-managed ACM
+// certificate that is applied to all tenants created by a TenantSource. The
+// primaryDomainName is automatically set to each tenant's domain.
+type TenantSourceManagedCertificateRequest struct {
+	// validationTokenHost specifies how the HTTP validation token is served.
+	// "cloudfront" means CloudFront serves the token automatically (requires
+	// DNS CNAME to be pointing to CloudFront before the request).
+	// "self-hosted" means you serve the validation token from your own infrastructure.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum=cloudfront;self-hosted
+	ValidationTokenHost string `json:"validationTokenHost"`
+
+	// certificateTransparencyLoggingPreference controls CT logging.
+	// +optional
+	// +kubebuilder:validation:Enum=enabled;disabled
+	CertificateTransparencyLoggingPreference *string `json:"certificateTransparencyLoggingPreference,omitempty"`
 }
 
 // PostgresSourceConfig defines connection details for a PostgreSQL source.
@@ -81,26 +107,46 @@ type PostgresSourceConfig struct {
 }
 
 // DynamoDBSourceConfig defines connection details for a DynamoDB source.
+// Each attribute field specifies the DynamoDB attribute name that maps to the
+// corresponding DistributionTenant spec field. Only nameAttribute and
+// domainAttribute are required; all others are optional.
 type DynamoDBSourceConfig struct {
-	// tableName is the DynamoDB table to scan or query.
+	// tableName is the DynamoDB table to scan.
 	// +kubebuilder:validation:Required
 	TableName string `json:"tableName"`
 
 	// region is the AWS region for the DynamoDB table.
+	// If not set, uses the operator's default region.
 	// +optional
 	Region *string `json:"region,omitempty"`
 
-	// nameAttribute is the attribute name in DynamoDB items that maps to
-	// the tenant name. Defaults to "name".
+	// nameAttribute is the DynamoDB attribute that maps to the tenant name
+	// (used as the DistributionTenant resource name). Defaults to "name".
 	// +optional
 	// +kubebuilder:default="name"
 	NameAttribute *string `json:"nameAttribute,omitempty"`
 
-	// domainAttribute is the attribute name in DynamoDB items that maps to
-	// the tenant domain. Defaults to "domain".
+	// domainAttribute is the DynamoDB attribute that maps to the tenant's
+	// domain (single domain string per item). Defaults to "domain".
 	// +optional
 	// +kubebuilder:default="domain"
 	DomainAttribute *string `json:"domainAttribute,omitempty"`
+
+	// enabledAttribute is the DynamoDB attribute (boolean) that maps to
+	// spec.enabled. If not set, defaults to true.
+	// +optional
+	EnabledAttribute *string `json:"enabledAttribute,omitempty"`
+
+	// connectionGroupIdAttribute is the DynamoDB attribute that maps to
+	// spec.connectionGroupId.
+	// +optional
+	ConnectionGroupIdAttribute *string `json:"connectionGroupIdAttribute,omitempty"`
+
+	// certificateArnAttribute is the DynamoDB attribute that maps to
+	// spec.customizations.certificate.arn. The ARN must refer to an ACM
+	// certificate in us-east-1.
+	// +optional
+	CertificateArnAttribute *string `json:"certificateArnAttribute,omitempty"`
 }
 
 // SecretReference is a reference to a Kubernetes secret in the same namespace.
@@ -190,6 +236,31 @@ type TenantSourceList struct {
 	metav1.ListMeta `json:"metadata,omitzero"`
 	Items           []TenantSource `json:"items"`
 }
+
+// TenantSource condition type constants.
+const (
+	// TSConditionTypeReady indicates the TenantSource is polling successfully.
+	TSConditionTypeReady = "Ready"
+)
+
+// TenantSource condition reason constants.
+const (
+	TSReasonPolling        = "Polling"
+	TSReasonPollSucceeded  = "PollSucceeded"
+	TSReasonPollFailed     = "PollFailed"
+	TSReasonSourceError    = "SourceError"
+	TSReasonConflict       = "Conflict"
+	TSReasonDeleting       = "Deleting"
+	TSReasonInvalidConfig  = "InvalidConfig"
+	TSReasonDryRunComplete = "DryRunComplete"
+)
+
+// TenantSourceFinalizerName is the finalizer used by the TenantSource controller.
+const TenantSourceFinalizerName = "cloudfront-tenant-operator.io/tenantsource-finalizer"
+
+// TenantSourceLabelKey is the label applied to DistributionTenant CRs managed
+// by a TenantSource, with the value set to the TenantSource's name.
+const TenantSourceLabelKey = "cloudfront-tenant-operator.io/source"
 
 func init() {
 	SchemeBuilder.Register(&TenantSource{}, &TenantSourceList{})

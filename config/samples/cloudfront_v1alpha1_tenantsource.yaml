@@ -1,26 +1,32 @@
-# TenantSource example: discover tenants from a PostgreSQL database.
-# The operator will periodically query the database and create/update
-# DistributionTenant CRs for each row returned.
-#
-# NOTE: This is a Phase 4 feature. The TenantSource controller is not yet
-# implemented. This sample serves as a design reference.
+# TenantSource example: discover tenants from a DynamoDB table.
+# The operator periodically scans the table and creates/updates/deletes
+# DistributionTenant CRs to match the table contents.
 apiVersion: cloudfront-tenant-operator.io/v1alpha1
 kind: TenantSource
 metadata:
   labels:
     app.kubernetes.io/name: cloudfront-tenant-operator
     app.kubernetes.io/managed-by: kustomize
-  name: postgres-tenants
+  name: dynamodb-tenants
 spec:
-  provider: postgres
+  provider: dynamodb
   distributionId: "E1XNX8R2GOAABC"
   pollInterval: "5m"
-  dryRun: true  # Start in dry-run to preview changes before applying
+  dryRun: false
 
-  postgres:
-    connectionSecretRef:
-      name: tenant-db-credentials
-    query: |
-      SELECT name, domain, enabled
-      FROM tenants
-      WHERE active = true
+  dynamodb:
+    tableName: "tenants"
+    region: "us-east-1"
+    # Attribute mappings (defaults shown):
+    nameAttribute: "name"       # partition key -> DistributionTenant metadata.name
+    domainAttribute: "domain"   # -> spec.domains[0].domain
+    # Optional attribute mappings:
+    # enabledAttribute: "enabled"                     # -> spec.enabled (bool)
+    # connectionGroupIdAttribute: "connection_group"  # -> spec.connectionGroupId
+    # certificateArnAttribute: "cert_arn"             # -> spec.customizations.certificate.arn
+
+  # Optional: request a CloudFront-managed ACM certificate for every tenant.
+  # primaryDomainName is automatically set to each tenant's domain.
+  # If a DynamoDB item has a certificateArn, it takes precedence over this.
+  # managedCertificateRequest:
+  #   validationTokenHost: "cloudfront"

@@ -3,18 +3,21 @@
 ## Project Structure
 
 ```
-cmd/main.go                              # Entrypoint, wires AWS client + controller + flags
+cmd/main.go                              # Entrypoint, wires AWS clients + controllers + flags
 api/v1alpha1/                            # CRD type definitions
 internal/controller/
   distributiontenant_controller.go       # Reconciliation logic (incl. DNS management)
+  tenantsource_controller.go             # TenantSource polling and CR lifecycle
   change_detection.go                    # Three-way diff and drift policy
 internal/aws/
   client.go                              # CloudFrontClient, DNSClient, ACMClient interfaces
   cloudfront.go                          # Real AWS CloudFront SDK implementation
   route53.go                             # Real AWS Route53 SDK implementation (DNSClient)
   acm.go                                 # Real AWS ACM SDK implementation (ACMClient)
+  dynamodb.go                            # Real AWS DynamoDB SDK implementation (DynamoDBClient)
   errors.go                              # Error classification (terminal vs retryable)
   mock.go                                # Mock clients for testing
+  dynamodb_mock.go                       # Mock DynamoDB client for testing
 internal/metrics/
   metrics.go                             # Prometheus metric definitions
   tenant_collector.go                    # prometheus.Collector for tenant counts
@@ -38,6 +41,32 @@ The controller follows a multi-phase reconciliation loop:
     - **No change**: update conditions, check [managed cert lifecycle](managed-certificates.md), clean up orphaned DNS records, requeue every 5 minutes.
 4. **Managed cert**: Track `pending-validation` -> `issued` -> auto-attach ARN to spec -> push update to AWS.
 5. **Delete**: Disable tenant -> wait for `Deployed` -> delete from AWS -> delete DNS records from Route53 -> remove finalizer.
+
+## TenantSource Reconciliation Flow
+
+The `TenantSource` controller manages `DistributionTenant` CRs from an external data source (currently DynamoDB).
+
+1. **Poll**: Scan the DynamoDB table and map items to desired `DistributionTenant` specs using the configured attribute mappings.
+2. **Diff**: Compare desired state (DynamoDB) with existing owned `DistributionTenant` CRs.
+3. **Sync**:
+    - **Create**: DynamoDB item exists, no matching CR -> create CR with owner reference and source label.
+    - **Update**: DynamoDB item exists, CR exists but spec differs -> update CR.
+    - **Delete**: CR exists, no matching DynamoDB item -> delete CR (the `DistributionTenant` controller handles AWS cleanup).
+4. **Dry run**: If `spec.dryRun` is `true`, populate `status.pendingChanges` instead of mutating CRs.
+5. **Status**: Update `lastPollTime`, `tenantsDiscovered`, `tenantsCreated`, `tenantsUpdated`, and conditions.
+6. **Requeue**: After `pollInterval` (default 5 minutes).
+
+### TenantSource Deletion
+
+When a `TenantSource` is deleted, its finalizer triggers cleanup:
+
+1. List all owned `DistributionTenant` CRs.
+2. Delete them (the `DistributionTenant` controller handles AWS-side cleanup).
+3. Remove the finalizer.
+
+### Conflict Avoidance
+
+If a `DistributionTenant` with the same name already exists but is **not** owned by the `TenantSource`, the controller skips it and reports a `Conflict` condition. This prevents hijacking user-created resources.
 
 ## Error Handling
 
@@ -107,6 +136,7 @@ The operator's IAM identity (or the assumed role for DNS) needs the following AW
 | `route53:ChangeResourceRecordSets` | Hosted zone ARN | Creating and deleting CNAME records (DNS only) |
 | `route53:GetChange` | `*` | Polling for record propagation (DNS only) |
 | `sts:AssumeRole` | Role ARN from `assumeRoleArn` | Cross-account Route53 access (only when configured) |
+| `dynamodb:Scan` | Table ARN | Polling DynamoDB for tenant definitions (TenantSource only) |
 
 ## CLI Flags
 
@@ -132,7 +162,7 @@ The operator's IAM identity (or the assumed role for DNS) needs the following AW
 | `cloudfront_tenant_operator_reconcile_errors_total` | Counter | `error_type` | Incremented once per AWS API error classified by `handleAWSError`, `handleDNSError`, or `handleDomainValidationPending`. **Label values:** `error_type` is one of `domain_conflict`, `access_denied`, `invalid_spec`, `connection_group_not_found` (CloudFront terminal), `domain_validation_pending` (DNS propagation delay with cloudfront-hosted validation), `dns_zone_not_found`, `dns_access_denied`, `dns_invalid_input`, `dns_error` (DNS terminal), `throttling`, `dns_throttling` (rate limited), `retryable`, or `dns_retryable`. Not incremented for spec validation failures or Kubernetes API errors. |
 | `cloudfront_tenant_operator_tenants_total` | Gauge | `namespace`, `status` | Current number of DistributionTenant resources per namespace. Implemented as a `prometheus.Collector` (kube-state-metrics / cert-manager pattern): the count is computed from the informer cache at Prometheus scrape time, not during reconciliation, so it is never stale and adds zero overhead to the reconcile loop. **Label values:** `status` is `Ready` (Ready condition is True) or `NotReady` (Ready condition is False or absent). |
 | `cloudfront_tenant_operator_drift_detected_total` | Counter | *(none)* | Incremented once each time `handleDrift` fires, regardless of the configured drift policy (enforce, report, or suspend). Provides an aggregate signal for alerting on external AWS drift. Per-resource drift details are available via the `Synced` condition and `status.driftDetected` field. |
-| `cloudfront_tenant_operator_aws_api_call_duration_seconds` | Histogram | `operation` | Wall-clock duration of each AWS SDK call. Recorded for both successful and failed calls. **Label values:** `operation` is one of `CreateDistributionTenant`, `GetDistributionTenant`, `UpdateDistributionTenant`, `DeleteDistributionTenant`, `GetDistribution`, `GetManagedCertificateDetails`, `GetConnectionGroup`, `ListConnectionGroups`, `Route53ChangeResourceRecordSets`, `Route53GetChange`, `ACMDescribeCertificate`. |
+| `cloudfront_tenant_operator_aws_api_call_duration_seconds` | Histogram | `operation` | Wall-clock duration of each AWS SDK call. Recorded for both successful and failed calls. **Label values:** `operation` is one of `CreateDistributionTenant`, `GetDistributionTenant`, `UpdateDistributionTenant`, `DeleteDistributionTenant`, `GetDistribution`, `GetManagedCertificateDetails`, `GetConnectionGroup`, `ListConnectionGroups`, `Route53ChangeResourceRecordSets`, `Route53GetChange`, `ACMDescribeCertificate`, `DynamoDBScan`. |
 
 ### Built-in controller-runtime metrics
 

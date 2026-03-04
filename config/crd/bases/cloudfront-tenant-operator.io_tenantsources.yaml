@@ -77,26 +77,72 @@ spec:
                   dynamodb contains the connection details for a DynamoDB source.
                   Required when provider is "dynamodb".
                 properties:
+                  certificateArnAttribute:
+                    description: |-
+                      certificateArnAttribute is the DynamoDB attribute that maps to
+                      spec.customizations.certificate.arn. The ARN must refer to an ACM
+                      certificate in us-east-1.
+                    type: string
+                  connectionGroupIdAttribute:
+                    description: |-
+                      connectionGroupIdAttribute is the DynamoDB attribute that maps to
+                      spec.connectionGroupId.
+                    type: string
                   domainAttribute:
                     default: domain
                     description: |-
-                      domainAttribute is the attribute name in DynamoDB items that maps to
-                      the tenant domain. Defaults to "domain".
+                      domainAttribute is the DynamoDB attribute that maps to the tenant's
+                      domain (single domain string per item). Defaults to "domain".
+                    type: string
+                  enabledAttribute:
+                    description: |-
+                      enabledAttribute is the DynamoDB attribute (boolean) that maps to
+                      spec.enabled. If not set, defaults to true.
                     type: string
                   nameAttribute:
                     default: name
                     description: |-
-                      nameAttribute is the attribute name in DynamoDB items that maps to
-                      the tenant name. Defaults to "name".
+                      nameAttribute is the DynamoDB attribute that maps to the tenant name
+                      (used as the DistributionTenant resource name). Defaults to "name".
                     type: string
                   region:
-                    description: region is the AWS region for the DynamoDB table.
+                    description: |-
+                      region is the AWS region for the DynamoDB table.
+                      If not set, uses the operator's default region.
                     type: string
                   tableName:
-                    description: tableName is the DynamoDB table to scan or query.
+                    description: tableName is the DynamoDB table to scan.
                     type: string
                 required:
                 - tableName
+                type: object
+              managedCertificateRequest:
+                description: |-
+                  managedCertificateRequest configures a CloudFront-managed ACM certificate
+                  for all tenants created by this source. The primaryDomainName is
+                  automatically set to each tenant's domain. If a DynamoDB item provides a
+                  certificateArn (via certificateArnAttribute), it takes precedence and
+                  the managed certificate is not used for that tenant.
+                properties:
+                  certificateTransparencyLoggingPreference:
+                    description: certificateTransparencyLoggingPreference controls
+                      CT logging.
+                    enum:
+                    - enabled
+                    - disabled
+                    type: string
+                  validationTokenHost:
+                    description: |-
+                      validationTokenHost specifies how the HTTP validation token is served.
+                      "cloudfront" means CloudFront serves the token automatically (requires
+                      DNS CNAME to be pointing to CloudFront before the request).
+                      "self-hosted" means you serve the validation token from your own infrastructure.
+                    enum:
+                    - cloudfront
+                    - self-hosted
+                    type: string
+                required:
+                - validationTokenHost
                 type: object
               pollInterval:
                 default: 5m

@@ -1,6 +1,6 @@
 # CRD Specification
 
-Full reference for the `DistributionTenant` custom resource.
+Full reference for the `DistributionTenant` and `TenantSource` custom resources.
 
 See the [Go type definitions](https://github.com/dsp0x4/cloudfront-tenant-operator/blob/main/api/v1alpha1/distributiontenant_types.go) and [example CRs](https://github.com/dsp0x4/cloudfront-tenant-operator/tree/main/config/samples/) for additional detail.
 
@@ -104,3 +104,75 @@ The Kubernetes resource name (`metadata.name`) is used as the CloudFront tenant 
 - 3-128 characters
 - Start and end with a lowercase alphanumeric character
 - Contain only lowercase alphanumerics, dots (`.`), and hyphens (`-`)
+
+---
+
+## TenantSource
+
+A `TenantSource` points to an external data source (currently DynamoDB) and automatically creates, updates, and deletes `DistributionTenant` CRs to match the external state.
+
+See the [Go type definitions](https://github.com/dsp0x4/cloudfront-tenant-operator/blob/main/api/v1alpha1/tenantsource_types.go) for additional detail.
+
+### Spec Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `provider` | string | Yes | External source type (`"dynamodb"`) |
+| `pollInterval` | duration | No | How often to poll the source (default: `5m`) |
+| `distributionId` | string | Yes | Default parent multi-tenant distribution ID for discovered tenants |
+| `targetNamespace` | string | No | Namespace for created DistributionTenants (default: TenantSource's namespace) |
+| `managedCertificateRequest` | `TenantSourceManagedCertificateRequest` | No | Managed certificate config applied to all tenants (see below) |
+| `dryRun` | bool | No | When `true`, calculates changes without mutating CRs (default: `false`) |
+| `dynamodb` | `DynamoDBSourceConfig` | Conditional | DynamoDB source config (required when `provider` is `"dynamodb"`) |
+| `postgres` | `PostgresSourceConfig` | Conditional | PostgreSQL source config (not yet implemented) |
+
+### DynamoDBSourceConfig
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `tableName` | string | Yes | DynamoDB table to scan |
+| `region` | string | No | AWS region for the table (default: operator's default region) |
+| `nameAttribute` | string | No | DynamoDB attribute for tenant name (default: `"name"`) |
+| `domainAttribute` | string | No | DynamoDB attribute for tenant domain (default: `"domain"`) |
+| `enabledAttribute` | string | No | DynamoDB attribute (boolean) for `spec.enabled` |
+| `connectionGroupIdAttribute` | string | No | DynamoDB attribute for `spec.connectionGroupId` |
+| `certificateArnAttribute` | string | No | DynamoDB attribute for `spec.customizations.certificate.arn` |
+
+Each DynamoDB item produces one `DistributionTenant` CR. The `nameAttribute` value becomes the CR's `metadata.name`, and the `domainAttribute` value becomes the single entry in `spec.domains`.
+
+### TenantSourceManagedCertificateRequest
+
+Configures a CloudFront-managed ACM certificate for all tenants created by the source. The `primaryDomainName` is automatically set to each tenant's domain. If a DynamoDB item provides a `certificateArn` (via `certificateArnAttribute`), the custom certificate takes precedence and the managed certificate is not used for that tenant.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `validationTokenHost` | string | Yes | `"cloudfront"` or `"self-hosted"` |
+| `certificateTransparencyLoggingPreference` | string | No | `"enabled"` or `"disabled"` |
+
+### TenantSource Status Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `lastPollTime` | timestamp | When the last successful poll occurred |
+| `tenantsDiscovered` | int | Number of items found in the last poll |
+| `tenantsCreated` | int | Number of CRs created in the last poll cycle |
+| `tenantsUpdated` | int | Number of CRs updated in the last poll cycle |
+| `pendingChanges` | array of `PendingChange` | Changes that would be made (only populated when `dryRun` is `true`) |
+| `conditions` | array of `Condition` | Standard Kubernetes conditions |
+
+### PendingChange
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `action` | string | `"create"`, `"update"`, or `"delete"` |
+| `tenantName` | string | Name of the DistributionTenant that would be affected |
+| `description` | string | Human-readable description of the change |
+
+### Ownership and Labeling
+
+Managed `DistributionTenant` CRs receive:
+
+- An **owner reference** pointing to the `TenantSource`, enabling Kubernetes garbage collection and efficient listing.
+- A **label** `cloudfront-tenant-operator.io/source: <tenantsource-name>` for easy `kubectl` filtering.
+
+The controller never modifies `DistributionTenant` resources that it does not own. If a user-created tenant has the same name as a DynamoDB item, the controller reports a conflict in its status conditions and skips that item.

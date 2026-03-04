@@ -83,6 +83,16 @@ If you use `spec.dns` for automatic Route53 record management, also add:
 }
 ```
 
+If you use `TenantSource` with `provider: dynamodb`, also add:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": ["dynamodb:Scan"],
+  "Resource": "arn:aws:dynamodb:*:*:table/<your-table-name>"
+}
+```
+
 ## Upgrading
 
 Helm does **not** automatically upgrade CRDs. After upgrading the chart, apply the latest CRDs manually:

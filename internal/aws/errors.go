@@ -25,8 +25,10 @@ import (
 )
 
 const (
-	awsErrCodeThrottling  = "Throttling"
-	awsErrCodeTooManyReqs = "TooManyRequests"
+	awsErrCodeThrottling       = "Throttling"
+	awsErrCodeTooManyReqs      = "TooManyRequests"
+	awsErrCodeAccessDenied     = "AccessDeniedException"
+	awsErrCodeResourceNotFound = "ResourceNotFoundException"
 )
 
 // Terminal error sentinel values. These errors indicate conditions that cannot
@@ -76,6 +78,9 @@ var (
 
 	// ErrConnectionGroupNotFound indicates the connection group does not exist.
 	ErrConnectionGroupNotFound = errors.New("connection group not found")
+
+	// ErrDynamoDBTableNotFound indicates the DynamoDB table does not exist.
+	ErrDynamoDBTableNotFound = errors.New("DynamoDB table not found")
 )
 
 // IsTerminalError returns true if the error is a terminal error that should
@@ -163,7 +168,7 @@ func classifyRoute53Error(err error) error {
 		switch code {
 		case "NoSuchHostedZone", "HostedZoneNotFound":
 			return fmt.Errorf("%w: %s", ErrHostedZoneNotFound, msg)
-		case "AccessDenied", "AccessDeniedException":
+		case "AccessDenied", awsErrCodeAccessDenied:
 			return fmt.Errorf("%w: %s", ErrDNSAccessDenied, msg)
 		case "InvalidInput":
 			return fmt.Errorf("%w: %s", ErrDNSInvalidInput, msg)
@@ -193,9 +198,9 @@ func classifyACMError(err error) error {
 		code := apiErr.ErrorCode()
 		msg := apiErr.ErrorMessage()
 		switch code {
-		case "ResourceNotFoundException":
+		case awsErrCodeResourceNotFound:
 			return fmt.Errorf("%w: %s", ErrCertificateNotFound, msg)
-		case "AccessDeniedException":
+		case awsErrCodeAccessDenied:
 			return fmt.Errorf("%w: %s", ErrAccessDenied, msg)
 		case awsErrCodeThrottling, awsErrCodeTooManyReqs:
 			return fmt.Errorf("%w: %s", ErrThrottling, msg)

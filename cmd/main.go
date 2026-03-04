@@ -232,6 +232,21 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "DistributionTenant")
 		os.Exit(1)
 	}
+
+	if err := (&controller.TenantSourceReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorder("tenantsource-controller"),
+		NewDynamoDBClient: func(region string) cfaws.DynamoDBClient {
+			if region != "" {
+				return cfaws.NewRealDynamoDBClientForRegion(awsCfg, region)
+			}
+			return cfaws.NewRealDynamoDBClient(awsCfg)
+		},
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "TenantSource")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
