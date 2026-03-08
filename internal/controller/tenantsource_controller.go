@@ -28,9 +28,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	cloudfrontv1alpha1 "github.com/dsp0x4/cloudfront-tenant-operator/api/v1alpha1"
 	cfaws "github.com/dsp0x4/cloudfront-tenant-operator/internal/aws"
@@ -59,6 +61,7 @@ type TenantSourceReconciler struct {
 type syncResult struct {
 	created        int
 	updated        int
+	deleted        int
 	pendingChanges []cloudfrontv1alpha1.PendingChange
 	errs           []string
 }
@@ -81,7 +84,7 @@ func (r *TenantSourceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if err := r.Update(ctx, &source); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, nil
+		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
 	if result, err := r.validateSourceConfig(ctx, &source); result != nil {
@@ -107,9 +110,10 @@ func (r *TenantSourceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
-	if sr.created > 0 || sr.updated > 0 {
+	if sr.created > 0 || sr.updated > 0 || sr.deleted > 0 {
 		r.recordEvent(&source, "Normal", cloudfrontv1alpha1.TSReasonPollSucceeded,
-			fmt.Sprintf("Synced: %d discovered, %d created, %d updated", len(items), sr.created, sr.updated))
+			fmt.Sprintf("Synced: %d discovered, %d created, %d updated, %d deleted",
+				len(items), sr.created, sr.updated, sr.deleted))
 	}
 
 	pollInterval := 5 * time.Minute
@@ -118,7 +122,7 @@ func (r *TenantSourceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	log.V(1).Info("Poll complete", "discovered", len(items), "created", sr.created,
-		"updated", sr.updated, "nextPoll", pollInterval)
+		"updated", sr.updated, "deleted", sr.deleted, "nextPoll", pollInterval)
 	return ctrl.Result{RequeueAfter: pollInterval}, nil
 }
 
@@ -216,6 +220,8 @@ func (r *TenantSourceReconciler) syncTenants(
 			})
 		} else if err := r.Delete(ctx, dt); err != nil {
 			sr.errs = append(sr.errs, fmt.Sprintf("failed to delete tenant %q: %v", name, err))
+		} else {
+			sr.deleted++
 		}
 	}
 
@@ -309,6 +315,7 @@ func (r *TenantSourceReconciler) updateSyncStatus(
 	source.Status.TenantsDiscovered = len(items)
 	source.Status.TenantsCreated = sr.created
 	source.Status.TenantsUpdated = sr.updated
+	source.Status.TenantsDeleted = sr.deleted
 
 	if isDryRun {
 		source.Status.PendingChanges = sr.pendingChanges
@@ -325,8 +332,8 @@ func (r *TenantSourceReconciler) updateSyncStatus(
 		} else {
 			r.setCondition(source, metav1.ConditionTrue,
 				cloudfrontv1alpha1.TSReasonPollSucceeded,
-				fmt.Sprintf("Poll succeeded: %d discovered, %d created, %d updated",
-					len(items), sr.created, sr.updated))
+				fmt.Sprintf("Poll succeeded: %d discovered, %d created, %d updated, %d deleted",
+					len(items), sr.created, sr.updated, sr.deleted))
 		}
 	}
 }
@@ -597,7 +604,8 @@ func (r *TenantSourceReconciler) recordEvent(source *cloudfrontv1alpha1.TenantSo
 // SetupWithManager sets up the controller with the Manager.
 func (r *TenantSourceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&cloudfrontv1alpha1.TenantSource{}).
+		For(&cloudfrontv1alpha1.TenantSource{},
+			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Owns(&cloudfrontv1alpha1.DistributionTenant{}).
 		Named("tenantsource").
 		Complete(r)

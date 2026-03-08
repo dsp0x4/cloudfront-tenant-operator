@@ -112,7 +112,7 @@ var _ = Describe("TenantSource Controller", func() {
 		// First reconcile: adds finalizer
 		result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(result).To(Equal(reconcile.Result{}))
+		Expect(result.RequeueAfter).To(Equal(time.Second))
 
 		Expect(k8sClient.Get(ctx, namespacedName, source)).To(Succeed())
 		Expect(source.Finalizers).To(ContainElement(cloudfrontv1alpha1.TenantSourceFinalizerName))

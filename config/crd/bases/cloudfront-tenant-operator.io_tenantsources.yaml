@@ -291,6 +291,11 @@ spec:
                   tenantsCreated is the number of DistributionTenant CRs created
                   in the last poll cycle.
                 type: integer
+              tenantsDeleted:
+                description: |-
+                  tenantsDeleted is the number of DistributionTenant CRs deleted
+                  in the last poll cycle.
+                type: integer
               tenantsDiscovered:
                 description: tenantsDiscovered is the number of tenants found in the
                   last poll.

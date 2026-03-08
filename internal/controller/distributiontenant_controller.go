@@ -31,10 +31,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	crcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	cloudfrontv1alpha1 "github.com/dsp0x4/cloudfront-tenant-operator/api/v1alpha1"
 	cfaws "github.com/dsp0x4/cloudfront-tenant-operator/internal/aws"
@@ -101,8 +103,7 @@ func (r *DistributionTenantReconciler) Reconcile(ctx context.Context, req ctrl.R
 		if err := r.Update(ctx, &tenant); err != nil {
 			return ctrl.Result{}, err
 		}
-		// The metadata update triggers a watch event that requeues automatically.
-		return ctrl.Result{}, nil
+		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
 	// 4. Create or update
@@ -1446,15 +1447,16 @@ func specToAWSTags(tags []cloudfrontv1alpha1.Tag) []cfaws.TagInput {
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *DistributionTenantReconciler) SetupWithManager(mgr ctrl.Manager, maxConcurrent int) error {
-	builder := ctrl.NewControllerManagedBy(mgr).
-		For(&cloudfrontv1alpha1.DistributionTenant{}).
+	b := ctrl.NewControllerManagedBy(mgr).
+		For(&cloudfrontv1alpha1.DistributionTenant{},
+			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Named("distributiontenant")
 
 	if maxConcurrent > 0 {
-		builder = builder.WithOptions(crcontroller.Options{
+		b = b.WithOptions(crcontroller.Options{
 			MaxConcurrentReconciles: maxConcurrent,
 		})
 	}
 
-	return builder.Complete(r)
+	return b.Complete(r)
 }

@@ -164,17 +164,22 @@ type TenantSourceStatus struct {
 
 	// tenantsDiscovered is the number of tenants found in the last poll.
 	// +optional
-	TenantsDiscovered int `json:"tenantsDiscovered,omitempty"`
+	TenantsDiscovered int `json:"tenantsDiscovered"`
 
 	// tenantsCreated is the number of DistributionTenant CRs created
 	// in the last poll cycle.
 	// +optional
-	TenantsCreated int `json:"tenantsCreated,omitempty"`
+	TenantsCreated int `json:"tenantsCreated"`
 
 	// tenantsUpdated is the number of DistributionTenant CRs updated
 	// in the last poll cycle.
 	// +optional
-	TenantsUpdated int `json:"tenantsUpdated,omitempty"`
+	TenantsUpdated int `json:"tenantsUpdated"`
+
+	// tenantsDeleted is the number of DistributionTenant CRs deleted
+	// in the last poll cycle.
+	// +optional
+	TenantsDeleted int `json:"tenantsDeleted"`
 
 	// pendingChanges describes what would change if dryRun were false.
 	// Only populated when dryRun is true.
