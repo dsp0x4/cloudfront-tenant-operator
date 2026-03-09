@@ -106,4 +106,4 @@ kubectl edit distributiontenant my-tenant
 kubectl delete distributiontenant my-tenant
 ```
 
-The operator will automatically disable the tenant, wait for the disable to propagate, then delete the AWS resource and remove the finalizer.
+The operator will automatically disable the tenant, then immediately attempt to delete the AWS resource (optimistic deletion). If the tenant is not yet fully disabled, the operator retries after a short backoff. Once deleted, it cleans up DNS records and removes the finalizer.

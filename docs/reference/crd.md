@@ -177,6 +177,7 @@ Each DynamoDB item produces one `DistributionTenant` CR. The `nameAttribute` val
 | `tenantsDiscovered` | int | Number of items found in the last poll |
 | `tenantsCreated` | int | Number of CRs created in the last poll cycle |
 | `tenantsUpdated` | int | Number of CRs updated in the last poll cycle |
+| `tenantsDeleted` | int | Number of CRs deleted in the last poll cycle |
 | `pendingChanges` | array of `PendingChange` | Changes that would be made (only populated when `dryRun` is `true`) |
 | `conditions` | array of `Condition` | Standard Kubernetes conditions |
 

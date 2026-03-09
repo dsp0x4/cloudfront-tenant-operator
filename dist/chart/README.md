@@ -8,7 +8,7 @@ A Kubernetes operator for managing [CloudFront Distribution Tenants](https://doc
 
 ```bash
 helm install cloudfront-tenant-operator \
-  oci://ghcr.io/dsp0x4/cloudfront-tenant-operator/charts/cloudfront-tenant-operator \
+  oci://ghcr.io/dsp0x4/charts/cloudfront-tenant-operator \
   --namespace cloudfront-tenant-operator-system \
   --create-namespace
 ```

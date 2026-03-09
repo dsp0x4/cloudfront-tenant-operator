@@ -40,7 +40,7 @@ The controller follows a multi-phase reconciliation loop:
     - **Drift** (generation matches, AWS differs): apply the configured [drift policy](drift-detection.md).
     - **No change**: update conditions, check [managed cert lifecycle](managed-certificates.md), clean up orphaned DNS records, requeue every 5 minutes.
 4. **Managed cert**: Track `pending-validation` -> `issued` -> auto-attach ARN to spec -> push update to AWS.
-5. **Delete**: Disable tenant -> wait for `Deployed` -> delete from AWS -> delete DNS records from Route53 -> remove finalizer.
+5. **Delete**: Disable tenant -> attempt deletion immediately (optimistic) -> delete DNS records from Route53 -> remove finalizer. If AWS rejects the delete because the tenant is not yet fully disabled, the operator requeues with a 30-second backoff.
 
 ## TenantSource Reconciliation Flow
 
@@ -96,7 +96,7 @@ The controller ensures **at most one Kubernetes API write** (spec update or stat
 Operations that logically require multiple writes are split across reconcile cycles:
 
 - **Certificate attachment**: Persists the certificate ARN to the spec (one write), then returns. The spec change triggers a watch event, and the next reconcile pushes the update to AWS.
-- **Deletion**: Each step (disable, wait, delete, remove finalizer) is a separate reconcile with at most one write.
+- **Deletion**: Each step (disable, delete, remove finalizer) is a separate reconcile with at most one write. Deletion is attempted optimistically right after disabling; if the tenant is not yet fully disabled, the controller requeues after 30 seconds.
 
 ## DNS Record Management
 

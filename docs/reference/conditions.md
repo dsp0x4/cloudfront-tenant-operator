@@ -14,7 +14,7 @@ Indicates whether the tenant is fully deployed and serving traffic.
 | `False` | `Creating` | AWS resource creation is in progress |
 | `False` | `Deploying` | AWS deployment is in progress (after create or update) |
 | `False` | `Disabling` | Tenant is being disabled before deletion |
-| `False` | `Deleting` | Waiting for deployment to complete before deletion |
+| `False` | `Deleting` | Tenant is being deleted from AWS |
 | `False` | `DomainConflict` | Domain is already used by another distribution (terminal) |
 | `False` | `AccessDenied` | Insufficient IAM permissions (terminal) |
 | `False` | `InvalidSpec` | AWS rejected the request as invalid (terminal) |
