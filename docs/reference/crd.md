@@ -46,7 +46,7 @@ See the [Go type definitions](https://github.com/dsp0x4/cloudfront-tenant-operat
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `validationTokenHost` | string | Yes | Validation method: `"cloudfront"` or `"self-hosted"` |
-| `primaryDomainName` | string | Yes | Primary domain for the certificate (must be one of the `spec.domains`) |
+| `primaryDomainName` | string | No | Primary domain for the certificate (defaults to the first domain in `spec.domains`) |
 | `certificateTransparencyLoggingPreference` | string | No | `"enabled"` or `"disabled"` |
 
 ### DNSConfig
@@ -121,10 +121,26 @@ See the [Go type definitions](https://github.com/dsp0x4/cloudfront-tenant-operat
 | `pollInterval` | duration | No | How often to poll the source (default: `5m`) |
 | `distributionId` | string | Yes | Default parent multi-tenant distribution ID for discovered tenants |
 | `targetNamespace` | string | No | Namespace for created DistributionTenants (default: TenantSource's namespace) |
-| `managedCertificateRequest` | `TenantSourceManagedCertificateRequest` | No | Managed certificate config applied to all tenants (see below) |
+| `template` | `TenantTemplate` | No | Baseline values applied to every tenant (see below) |
 | `dryRun` | bool | No | When `true`, calculates changes without mutating CRs (default: `false`) |
 | `dynamodb` | `DynamoDBSourceConfig` | Conditional | DynamoDB source config (required when `provider` is `"dynamodb"`) |
 | `postgres` | `PostgresSourceConfig` | Conditional | PostgreSQL source config (not yet implemented) |
+
+### TenantTemplate
+
+Defines default values applied to every `DistributionTenant` created by the source. All fields are optional. DynamoDB items can override individual fields when the corresponding attribute mapping is configured.
+
+Precedence: **DynamoDB item value > template value > K8s default**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `enabled` | bool | No | Whether tenants serve traffic (default: `true`) |
+| `connectionGroupId` | string | No | Default connection group for all tenants |
+| `parameters` | array of `Parameter` | No | Default key-value parameters |
+| `customizations` | `Customizations` | No | Default WAF, certificate, and geo restriction settings |
+| `managedCertificateRequest` | `ManagedCertificateRequest` | No | Managed certificate config (same type as DistributionTenant; `primaryDomainName` defaults to the tenant's first domain). If a DynamoDB item provides a `certificateArn`, it takes precedence. Individual fields can be overridden per tenant via DynamoDB attribute mappings. |
+| `tags` | array of `Tag` | No | Default AWS resource tags |
+| `dns` | `DNSConfig` | No | Default DNS record management config |
 
 ### DynamoDBSourceConfig
 
@@ -133,21 +149,25 @@ See the [Go type definitions](https://github.com/dsp0x4/cloudfront-tenant-operat
 | `tableName` | string | Yes | DynamoDB table to scan |
 | `region` | string | No | AWS region for the table (default: operator's default region) |
 | `nameAttribute` | string | No | DynamoDB attribute for tenant name (default: `"name"`) |
-| `domainAttribute` | string | No | DynamoDB attribute for tenant domain (default: `"domain"`) |
+| `domainsAttribute` | string | No | DynamoDB attribute for tenant domains — accepts String (S) for a single domain or StringSet (SS) for multiple domains (default: `"domains"`) |
 | `enabledAttribute` | string | No | DynamoDB attribute (boolean) for `spec.enabled` |
 | `connectionGroupIdAttribute` | string | No | DynamoDB attribute for `spec.connectionGroupId` |
-| `certificateArnAttribute` | string | No | DynamoDB attribute for `spec.customizations.certificate.arn` |
+| `certificateArnAttribute` | string | No | DynamoDB attribute for `spec.customizations.certificate.arn` — overrides template managed cert |
+| `validationTokenHostAttribute` | string | No | DynamoDB attribute to override `template.managedCertificateRequest.validationTokenHost` |
+| `primaryDomainNameAttribute` | string | No | DynamoDB attribute to override the managed certificate primary domain |
+| `certificateTransparencyLoggingPreferenceAttribute` | string | No | DynamoDB attribute to override CT logging preference |
+| `dnsProviderAttribute` | string | No | DynamoDB attribute to override `template.dns.provider` |
+| `hostedZoneIdAttribute` | string | No | DynamoDB attribute to override `template.dns.hostedZoneId` |
+| `dnsTTLAttribute` | string | No | DynamoDB attribute (number) to override `template.dns.ttl` |
+| `dnsAssumeRoleArnAttribute` | string | No | DynamoDB attribute to override `template.dns.assumeRoleArn` |
+| `webAclActionAttribute` | string | No | DynamoDB attribute to override `template.customizations.webAcl.action` |
+| `webAclArnAttribute` | string | No | DynamoDB attribute to override `template.customizations.webAcl.arn` |
+| `geoRestrictionTypeAttribute` | string | No | DynamoDB attribute to override `template.customizations.geoRestrictions.restrictionType` |
+| `geoLocationsAttribute` | string | No | DynamoDB attribute (StringSet) to override `template.customizations.geoRestrictions.locations` |
+| `parametersAttribute` | string | No | DynamoDB attribute (Map) to override `template.parameters` (replaces template entirely) |
+| `tagsAttribute` | string | No | DynamoDB attribute (Map) to override `template.tags` (replaces template entirely) |
 
-Each DynamoDB item produces one `DistributionTenant` CR. The `nameAttribute` value becomes the CR's `metadata.name`, and the `domainAttribute` value becomes the single entry in `spec.domains`.
-
-### TenantSourceManagedCertificateRequest
-
-Configures a CloudFront-managed ACM certificate for all tenants created by the source. The `primaryDomainName` is automatically set to each tenant's domain. If a DynamoDB item provides a `certificateArn` (via `certificateArnAttribute`), the custom certificate takes precedence and the managed certificate is not used for that tenant.
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `validationTokenHost` | string | Yes | `"cloudfront"` or `"self-hosted"` |
-| `certificateTransparencyLoggingPreference` | string | No | `"enabled"` or `"disabled"` |
+Each DynamoDB item produces one `DistributionTenant` CR. The `nameAttribute` value becomes the CR's `metadata.name`, and the `domainsAttribute` value becomes the `spec.domains` list.
 
 ### TenantSource Status Fields
 

@@ -37,6 +37,7 @@ var _ = Describe("TenantSource Controller", func() {
 		sourceName      = "test-source"
 		sourceNamespace = "default"
 		distributionId  = "E1XNX8R2GOAABC"
+		testHostedZone  = "Z1234567890"
 	)
 
 	var (
@@ -102,8 +103,8 @@ var _ = Describe("TenantSource Controller", func() {
 
 	It("should add a finalizer and create tenants from DynamoDB scan", func() {
 		mockDB.Items = []cfaws.TenantItem{
-			{Name: "tenant-a", Domain: "a.example.com"},
-			{Name: "tenant-b", Domain: "b.example.com"},
+			{Name: "tenant-a", Domains: []string{"a.example.com"}},
+			{Name: "tenant-b", Domains: []string{"b.example.com"}},
 		}
 
 		source := newTestSource()
@@ -149,7 +150,7 @@ var _ = Describe("TenantSource Controller", func() {
 
 	It("should update tenants when DynamoDB items change", func() {
 		mockDB.Items = []cfaws.TenantItem{
-			{Name: "tenant-a", Domain: "a.example.com"},
+			{Name: "tenant-a", Domains: []string{"a.example.com"}},
 		}
 
 		source := newTestSource()
@@ -166,7 +167,7 @@ var _ = Describe("TenantSource Controller", func() {
 
 		// Change domain in DynamoDB
 		mockDB.Items = []cfaws.TenantItem{
-			{Name: "tenant-a", Domain: "new-a.example.com"},
+			{Name: "tenant-a", Domains: []string{"new-a.example.com"}},
 		}
 
 		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
@@ -182,8 +183,8 @@ var _ = Describe("TenantSource Controller", func() {
 
 	It("should delete tenants removed from DynamoDB", func() {
 		mockDB.Items = []cfaws.TenantItem{
-			{Name: "tenant-a", Domain: "a.example.com"},
-			{Name: "tenant-b", Domain: "b.example.com"},
+			{Name: "tenant-a", Domains: []string{"a.example.com"}},
+			{Name: "tenant-b", Domains: []string{"b.example.com"}},
 		}
 
 		source := newTestSource()
@@ -195,7 +196,7 @@ var _ = Describe("TenantSource Controller", func() {
 
 		// Remove tenant-b from DynamoDB
 		mockDB.Items = []cfaws.TenantItem{
-			{Name: "tenant-a", Domain: "a.example.com"},
+			{Name: "tenant-a", Domains: []string{"a.example.com"}},
 		}
 
 		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
@@ -227,7 +228,7 @@ var _ = Describe("TenantSource Controller", func() {
 
 		// DynamoDB has an item with the same name
 		mockDB.Items = []cfaws.TenantItem{
-			{Name: "user-tenant", Domain: "dynamo.example.com"},
+			{Name: "user-tenant", Domains: []string{"dynamo.example.com"}},
 		}
 
 		source := newTestSource()
@@ -252,7 +253,7 @@ var _ = Describe("TenantSource Controller", func() {
 
 	It("should populate pendingChanges in dry-run mode", func() {
 		mockDB.Items = []cfaws.TenantItem{
-			{Name: "tenant-a", Domain: "a.example.com"},
+			{Name: "tenant-a", Domains: []string{"a.example.com"}},
 		}
 
 		dryRun := true
@@ -289,7 +290,7 @@ var _ = Describe("TenantSource Controller", func() {
 		mockDB.Items = []cfaws.TenantItem{
 			{
 				Name:              "tenant-full",
-				Domain:            "full.example.com",
+				Domains:           []string{"full.example.com"},
 				Enabled:           &enabled,
 				ConnectionGroupId: &connGroupId,
 				CertificateArn:    &certArn,
@@ -313,14 +314,16 @@ var _ = Describe("TenantSource Controller", func() {
 		Expect(tenant.Spec.Customizations.Certificate.Arn).To(Equal(certArn))
 	})
 
-	It("should apply managed certificate request when configured", func() {
+	It("should apply managed certificate request from template", func() {
 		mockDB.Items = []cfaws.TenantItem{
-			{Name: "tenant-managed-cert", Domain: "managed.example.com"},
+			{Name: "tenant-managed-cert", Domains: []string{"managed.example.com"}},
 		}
 
 		source := newTestSource()
-		source.Spec.ManagedCertificateRequest = &cloudfrontv1alpha1.TenantSourceManagedCertificateRequest{
-			ValidationTokenHost: "cloudfront",
+		source.Spec.Template = &cloudfrontv1alpha1.TenantTemplate{
+			ManagedCertificateRequest: &cloudfrontv1alpha1.ManagedCertificateRequest{
+				ValidationTokenHost: "cloudfront",
+			},
 		}
 		Expect(k8sClient.Create(ctx, source)).To(Succeed())
 
@@ -340,12 +343,14 @@ var _ = Describe("TenantSource Controller", func() {
 	It("should prefer certificateArn over managed certificate request", func() {
 		certArn := "arn:aws:acm:us-east-1:123:certificate/custom"
 		mockDB.Items = []cfaws.TenantItem{
-			{Name: "tenant-custom-cert", Domain: "custom.example.com", CertificateArn: &certArn},
+			{Name: "tenant-custom-cert", Domains: []string{"custom.example.com"}, CertificateArn: &certArn},
 		}
 
 		source := newTestSource()
-		source.Spec.ManagedCertificateRequest = &cloudfrontv1alpha1.TenantSourceManagedCertificateRequest{
-			ValidationTokenHost: "cloudfront",
+		source.Spec.Template = &cloudfrontv1alpha1.TenantTemplate{
+			ManagedCertificateRequest: &cloudfrontv1alpha1.ManagedCertificateRequest{
+				ValidationTokenHost: "cloudfront",
+			},
 		}
 		Expect(k8sClient.Create(ctx, source)).To(Succeed())
 
@@ -363,12 +368,14 @@ var _ = Describe("TenantSource Controller", func() {
 
 	It("should not generate a diff when managed cert ARN is auto-attached", func() {
 		mockDB.Items = []cfaws.TenantItem{
-			{Name: "tenant-cert", Domain: "cert.example.com"},
+			{Name: "tenant-cert", Domains: []string{"cert.example.com"}},
 		}
 
 		source := newTestSource()
-		source.Spec.ManagedCertificateRequest = &cloudfrontv1alpha1.TenantSourceManagedCertificateRequest{
-			ValidationTokenHost: "cloudfront",
+		source.Spec.Template = &cloudfrontv1alpha1.TenantTemplate{
+			ManagedCertificateRequest: &cloudfrontv1alpha1.ManagedCertificateRequest{
+				ValidationTokenHost: "cloudfront",
+			},
 		}
 		Expect(k8sClient.Create(ctx, source)).To(Succeed())
 
@@ -447,7 +454,7 @@ var _ = Describe("TenantSource Controller", func() {
 
 	It("should delete owned tenants when TenantSource is deleted", func() {
 		mockDB.Items = []cfaws.TenantItem{
-			{Name: "tenant-a", Domain: "a.example.com"},
+			{Name: "tenant-a", Domains: []string{"a.example.com"}},
 		}
 
 		source := newTestSource()
@@ -477,5 +484,332 @@ var _ = Describe("TenantSource Controller", func() {
 		result, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal(reconcile.Result{}))
+	})
+
+	It("should apply template DNS config to created tenants", func() {
+		hostedZone := testHostedZone
+		var ttl int64 = 600
+		mockDB.Items = []cfaws.TenantItem{
+			{Name: "tenant-dns", Domains: []string{"dns.example.com"}},
+		}
+
+		source := newTestSource()
+		source.Spec.Template = &cloudfrontv1alpha1.TenantTemplate{
+			DNS: &cloudfrontv1alpha1.DNSConfig{
+				Provider:     "route53",
+				HostedZoneId: &hostedZone,
+				TTL:          &ttl,
+			},
+		}
+		Expect(k8sClient.Create(ctx, source)).To(Succeed())
+
+		_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+		Expect(err).NotTo(HaveOccurred())
+
+		var tenant cloudfrontv1alpha1.DistributionTenant
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "tenant-dns", Namespace: sourceNamespace}, &tenant)).To(Succeed())
+		Expect(tenant.Spec.DNS).NotTo(BeNil())
+		Expect(tenant.Spec.DNS.Provider).To(Equal("route53"))
+		Expect(*tenant.Spec.DNS.HostedZoneId).To(Equal(testHostedZone))
+		Expect(*tenant.Spec.DNS.TTL).To(Equal(int64(600)))
+	})
+
+	It("should apply template parameters and tags", func() {
+		tagVal := "prod"
+		mockDB.Items = []cfaws.TenantItem{
+			{Name: "tenant-pt", Domains: []string{"pt.example.com"}},
+		}
+
+		source := newTestSource()
+		source.Spec.Template = &cloudfrontv1alpha1.TenantTemplate{
+			Parameters: []cloudfrontv1alpha1.Parameter{
+				{Name: "env", Value: "production"},
+			},
+			Tags: []cloudfrontv1alpha1.Tag{
+				{Key: "environment", Value: &tagVal},
+			},
+		}
+		Expect(k8sClient.Create(ctx, source)).To(Succeed())
+
+		_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+		Expect(err).NotTo(HaveOccurred())
+
+		var tenant cloudfrontv1alpha1.DistributionTenant
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "tenant-pt", Namespace: sourceNamespace}, &tenant)).To(Succeed())
+		Expect(tenant.Spec.Parameters).To(HaveLen(1))
+		Expect(tenant.Spec.Parameters[0].Name).To(Equal("env"))
+		Expect(tenant.Spec.Parameters[0].Value).To(Equal("production"))
+		Expect(tenant.Spec.Tags).To(HaveLen(1))
+		Expect(tenant.Spec.Tags[0].Key).To(Equal("environment"))
+		Expect(*tenant.Spec.Tags[0].Value).To(Equal("prod"))
+	})
+
+	It("should apply template WebACL and geo restrictions", func() {
+		webAclArn := "arn:aws:wafv2:us-east-1:123:regional/webacl/test/abc"
+		mockDB.Items = []cfaws.TenantItem{
+			{Name: "tenant-waf", Domains: []string{"waf.example.com"}},
+		}
+
+		source := newTestSource()
+		source.Spec.Template = &cloudfrontv1alpha1.TenantTemplate{
+			Customizations: &cloudfrontv1alpha1.Customizations{
+				WebAcl: &cloudfrontv1alpha1.WebAclCustomization{
+					Action: "override",
+					Arn:    &webAclArn,
+				},
+				GeoRestrictions: &cloudfrontv1alpha1.GeoRestrictionCustomization{
+					RestrictionType: "whitelist",
+					Locations:       []string{"US", "GB"},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, source)).To(Succeed())
+
+		_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+		Expect(err).NotTo(HaveOccurred())
+
+		var tenant cloudfrontv1alpha1.DistributionTenant
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "tenant-waf", Namespace: sourceNamespace}, &tenant)).To(Succeed())
+		Expect(tenant.Spec.Customizations).NotTo(BeNil())
+		Expect(tenant.Spec.Customizations.WebAcl).NotTo(BeNil())
+		Expect(tenant.Spec.Customizations.WebAcl.Action).To(Equal("override"))
+		Expect(*tenant.Spec.Customizations.WebAcl.Arn).To(Equal(webAclArn))
+		Expect(tenant.Spec.Customizations.GeoRestrictions).NotTo(BeNil())
+		Expect(tenant.Spec.Customizations.GeoRestrictions.RestrictionType).To(Equal("whitelist"))
+		Expect(tenant.Spec.Customizations.GeoRestrictions.Locations).To(Equal([]string{"US", "GB"}))
+	})
+
+	It("should allow DynamoDB items to override template fields", func() {
+		hostedZone := testHostedZone
+		overrideZone := "Z9999999999"
+		var ttl int64 = 600
+		mockDB.Items = []cfaws.TenantItem{
+			{
+				Name:         "tenant-override",
+				Domains:      []string{"override.example.com"},
+				HostedZoneId: &overrideZone,
+			},
+		}
+
+		source := newTestSource()
+		source.Spec.Template = &cloudfrontv1alpha1.TenantTemplate{
+			DNS: &cloudfrontv1alpha1.DNSConfig{
+				Provider:     "route53",
+				HostedZoneId: &hostedZone,
+				TTL:          &ttl,
+			},
+		}
+		Expect(k8sClient.Create(ctx, source)).To(Succeed())
+
+		_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+		Expect(err).NotTo(HaveOccurred())
+
+		var tenant cloudfrontv1alpha1.DistributionTenant
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "tenant-override", Namespace: sourceNamespace}, &tenant)).To(Succeed())
+		Expect(tenant.Spec.DNS).NotTo(BeNil())
+		Expect(tenant.Spec.DNS.Provider).To(Equal("route53"))
+		Expect(*tenant.Spec.DNS.HostedZoneId).To(Equal("Z9999999999"))
+		Expect(*tenant.Spec.DNS.TTL).To(Equal(int64(600)))
+	})
+
+	It("should support multi-domain tenants", func() {
+		mockDB.Items = []cfaws.TenantItem{
+			{Name: "tenant-multi", Domains: []string{"a.example.com", "b.example.com", "c.example.com"}},
+		}
+
+		source := newTestSource()
+		Expect(k8sClient.Create(ctx, source)).To(Succeed())
+
+		_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+		Expect(err).NotTo(HaveOccurred())
+
+		var tenant cloudfrontv1alpha1.DistributionTenant
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "tenant-multi", Namespace: sourceNamespace}, &tenant)).To(Succeed())
+		Expect(tenant.Spec.Domains).To(HaveLen(3))
+		Expect(tenant.Spec.Domains[0].Domain).To(Equal("a.example.com"))
+		Expect(tenant.Spec.Domains[1].Domain).To(Equal("b.example.com"))
+		Expect(tenant.Spec.Domains[2].Domain).To(Equal("c.example.com"))
+	})
+
+	It("should not update when template and DynamoDB produce same spec as existing CR", func() {
+		hostedZone := testHostedZone
+		mockDB.Items = []cfaws.TenantItem{
+			{Name: "tenant-nodiff", Domains: []string{"nodiff.example.com"}},
+		}
+
+		source := newTestSource()
+		source.Spec.Template = &cloudfrontv1alpha1.TenantTemplate{
+			DNS: &cloudfrontv1alpha1.DNSConfig{
+				Provider:     "route53",
+				HostedZoneId: &hostedZone,
+			},
+		}
+		Expect(k8sClient.Create(ctx, source)).To(Succeed())
+
+		// Finalizer + create
+		_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+		_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+
+		// Poll again — same data, no updates expected
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(k8sClient.Get(ctx, namespacedName, source)).To(Succeed())
+		Expect(source.Status.TenantsUpdated).To(Equal(0))
+		Expect(source.Status.TenantsCreated).To(Equal(0))
+	})
+
+	It("should propagate template changes to existing tenants", func() {
+		mockDB.Items = []cfaws.TenantItem{
+			{Name: "tenant-tmpl", Domains: []string{"tmpl.example.com"}},
+		}
+
+		source := newTestSource()
+		Expect(k8sClient.Create(ctx, source)).To(Succeed())
+
+		// Finalizer + create
+		_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+		_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+
+		// Add a template with DNS
+		Expect(k8sClient.Get(ctx, namespacedName, source)).To(Succeed())
+		hostedZone := testHostedZone
+		source.Spec.Template = &cloudfrontv1alpha1.TenantTemplate{
+			DNS: &cloudfrontv1alpha1.DNSConfig{
+				Provider:     "route53",
+				HostedZoneId: &hostedZone,
+			},
+		}
+		Expect(k8sClient.Update(ctx, source)).To(Succeed())
+
+		// Reconcile — should detect diff and update
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(k8sClient.Get(ctx, namespacedName, source)).To(Succeed())
+		Expect(source.Status.TenantsUpdated).To(Equal(1))
+
+		var tenant cloudfrontv1alpha1.DistributionTenant
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "tenant-tmpl", Namespace: sourceNamespace}, &tenant)).To(Succeed())
+		Expect(tenant.Spec.DNS).NotTo(BeNil())
+		Expect(tenant.Spec.DNS.Provider).To(Equal("route53"))
+	})
+
+	It("should allow DynamoDB to override managed certificate fields", func() {
+		overrideHost := "self-hosted"
+		overridePrimary := "override.example.com"
+		mockDB.Items = []cfaws.TenantItem{
+			{
+				Name:                "tenant-cert-override",
+				Domains:             []string{"cert-override.example.com"},
+				ValidationTokenHost: &overrideHost,
+				PrimaryDomainName:   &overridePrimary,
+			},
+		}
+
+		source := newTestSource()
+		source.Spec.Template = &cloudfrontv1alpha1.TenantTemplate{
+			ManagedCertificateRequest: &cloudfrontv1alpha1.ManagedCertificateRequest{
+				ValidationTokenHost: "cloudfront",
+			},
+		}
+		Expect(k8sClient.Create(ctx, source)).To(Succeed())
+
+		_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+		Expect(err).NotTo(HaveOccurred())
+
+		var tenant cloudfrontv1alpha1.DistributionTenant
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "tenant-cert-override", Namespace: sourceNamespace}, &tenant)).To(Succeed())
+		Expect(tenant.Spec.ManagedCertificateRequest).NotTo(BeNil())
+		Expect(tenant.Spec.ManagedCertificateRequest.ValidationTokenHost).To(Equal("self-hosted"))
+		Expect(tenant.Spec.ManagedCertificateRequest.PrimaryDomainName).To(Equal("override.example.com"))
+	})
+
+	It("should preserve auto-attached cert ARN on update when using managed cert", func() {
+		mockDB.Items = []cfaws.TenantItem{
+			{Name: "tenant-preserve", Domains: []string{"preserve.example.com"}},
+		}
+
+		source := newTestSource()
+		source.Spec.Template = &cloudfrontv1alpha1.TenantTemplate{
+			ManagedCertificateRequest: &cloudfrontv1alpha1.ManagedCertificateRequest{
+				ValidationTokenHost: "cloudfront",
+			},
+		}
+		Expect(k8sClient.Create(ctx, source)).To(Succeed())
+
+		// Finalizer + create
+		_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+		_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+
+		// Simulate auto-attached certificate ARN
+		var tenant cloudfrontv1alpha1.DistributionTenant
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "tenant-preserve", Namespace: sourceNamespace}, &tenant)).To(Succeed())
+		tenant.Spec.Customizations = &cloudfrontv1alpha1.Customizations{
+			Certificate: &cloudfrontv1alpha1.CertificateCustomization{
+				Arn: "arn:aws:acm:us-east-1:123:certificate/auto",
+			},
+		}
+		Expect(k8sClient.Update(ctx, &tenant)).To(Succeed())
+
+		// Add a DNS template to trigger an update
+		Expect(k8sClient.Get(ctx, namespacedName, source)).To(Succeed())
+		hostedZone := "ZABC"
+		source.Spec.Template.DNS = &cloudfrontv1alpha1.DNSConfig{
+			Provider:     "route53",
+			HostedZoneId: &hostedZone,
+		}
+		Expect(k8sClient.Update(ctx, source)).To(Succeed())
+
+		// Reconcile — should update DNS but preserve auto-attached cert
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "tenant-preserve", Namespace: sourceNamespace}, &tenant)).To(Succeed())
+		Expect(tenant.Spec.DNS).NotTo(BeNil())
+		Expect(tenant.Spec.DNS.Provider).To(Equal("route53"))
+		Expect(tenant.Spec.Customizations).NotTo(BeNil())
+		Expect(tenant.Spec.Customizations.Certificate).NotTo(BeNil())
+		Expect(tenant.Spec.Customizations.Certificate.Arn).To(Equal("arn:aws:acm:us-east-1:123:certificate/auto"))
+		Expect(tenant.Spec.ManagedCertificateRequest).NotTo(BeNil())
+	})
+
+	It("should override template parameters when DynamoDB provides them", func() {
+		mockDB.Items = []cfaws.TenantItem{
+			{
+				Name:       "tenant-param-override",
+				Domains:    []string{"param.example.com"},
+				Parameters: map[string]string{"env": "staging", "region": "eu-west-1"},
+			},
+		}
+
+		source := newTestSource()
+		source.Spec.Template = &cloudfrontv1alpha1.TenantTemplate{
+			Parameters: []cloudfrontv1alpha1.Parameter{
+				{Name: "env", Value: "production"},
+				{Name: "tier", Value: "standard"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, source)).To(Succeed())
+
+		_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
+		Expect(err).NotTo(HaveOccurred())
+
+		var tenant cloudfrontv1alpha1.DistributionTenant
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "tenant-param-override", Namespace: sourceNamespace}, &tenant)).To(Succeed())
+		Expect(tenant.Spec.Parameters).To(HaveLen(2))
+		paramMap := make(map[string]string)
+		for _, p := range tenant.Spec.Parameters {
+			paramMap[p.Name] = p.Value
+		}
+		Expect(paramMap["env"]).To(Equal("staging"))
+		Expect(paramMap["region"]).To(Equal("eu-west-1"))
 	})
 })

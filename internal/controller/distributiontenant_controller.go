@@ -1295,7 +1295,7 @@ func buildCreateInput(tenant *cloudfrontv1alpha1.DistributionTenant) *cfaws.Crea
 	}
 
 	if tenant.Spec.ManagedCertificateRequest != nil {
-		input.ManagedCertificateRequest = specToAWSManagedCertRequest(tenant.Spec.ManagedCertificateRequest)
+		input.ManagedCertificateRequest = specToAWSManagedCertRequest(tenant.Spec.ManagedCertificateRequest, tenant.Spec.Domains)
 	}
 
 	if len(tenant.Spec.Tags) > 0 {
@@ -1328,7 +1328,7 @@ func buildUpdateInput(tenant *cloudfrontv1alpha1.DistributionTenant, eTag string
 	}
 
 	if tenant.Spec.ManagedCertificateRequest != nil {
-		input.ManagedCertificateRequest = specToAWSManagedCertRequest(tenant.Spec.ManagedCertificateRequest)
+		input.ManagedCertificateRequest = specToAWSManagedCertRequest(tenant.Spec.ManagedCertificateRequest, tenant.Spec.Domains)
 	}
 
 	return input
@@ -1426,13 +1426,21 @@ func specToAWSCustomizations(c *cloudfrontv1alpha1.Customizations) *cfaws.Custom
 	return out
 }
 
-func specToAWSManagedCertRequest(m *cloudfrontv1alpha1.ManagedCertificateRequest) *cfaws.ManagedCertificateRequestInput {
+func specToAWSManagedCertRequest(m *cloudfrontv1alpha1.ManagedCertificateRequest, domains []cloudfrontv1alpha1.DomainSpec) *cfaws.ManagedCertificateRequestInput {
 	if m == nil {
 		return nil
 	}
+	primaryDomain := m.PrimaryDomainName
+	if primaryDomain == "" && len(domains) > 0 {
+		primaryDomain = domains[0].Domain
+	}
+	var pdnPtr *string
+	if primaryDomain != "" {
+		pdnPtr = &primaryDomain
+	}
 	return &cfaws.ManagedCertificateRequestInput{
 		ValidationTokenHost:                      m.ValidationTokenHost,
-		PrimaryDomainName:                        &m.PrimaryDomainName,
+		PrimaryDomainName:                        pdnPtr,
 		CertificateTransparencyLoggingPreference: m.CertificateTransparencyLoggingPreference,
 	}
 }

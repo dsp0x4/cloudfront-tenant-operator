@@ -40,21 +40,62 @@ type DynamoDBClient interface {
 type ScanTenantsInput struct {
 	TableName string
 
-	// Attribute mappings (DynamoDB attribute name -> TenantItem field).
-	NameAttribute              string
-	DomainAttribute            string
+	// Required attribute mappings.
+	NameAttribute    string
+	DomainsAttribute string
+
+	// Optional attribute mappings — only active when non-empty.
 	EnabledAttribute           string
 	ConnectionGroupIdAttribute string
 	CertificateArnAttribute    string
+
+	// Managed certificate overrides.
+	ValidationTokenHostAttribute                      string
+	PrimaryDomainNameAttribute                        string
+	CertificateTransparencyLoggingPreferenceAttribute string
+
+	// DNS overrides.
+	DNSProviderAttribute      string
+	HostedZoneIdAttribute     string
+	DNSTTLAttribute           string
+	DNSAssumeRoleArnAttribute string
+
+	// Customization overrides.
+	WebAclActionAttribute       string
+	WebAclArnAttribute          string
+	GeoRestrictionTypeAttribute string
+	GeoLocationsAttribute       string
+
+	// Parameters and tags (DynamoDB Map type).
+	ParametersAttribute string
+	TagsAttribute       string
 }
 
 // TenantItem represents a single tenant discovered from DynamoDB.
 type TenantItem struct {
-	Name              string
-	Domain            string
+	Name    string
+	Domains []string
+
 	Enabled           *bool
 	ConnectionGroupId *string
 	CertificateArn    *string
+
+	ValidationTokenHost                      *string
+	PrimaryDomainName                        *string
+	CertificateTransparencyLoggingPreference *string
+
+	DNSProvider      *string
+	HostedZoneId     *string
+	DNSTTL           *int64
+	DNSAssumeRoleArn *string
+
+	WebAclAction       *string
+	WebAclArn          *string
+	GeoRestrictionType *string
+	GeoLocations       []string
+
+	Parameters map[string]string
+	Tags       map[string]string
 }
 
 // dynamoDBAPI defines the subset of the AWS DynamoDB SDK client we use.
@@ -132,11 +173,11 @@ func mapDynamoItem(item map[string]dbtypes.AttributeValue, input *ScanTenantsInp
 	}
 	tenant.Name = name
 
-	domain, ok := getStringAttr(item, input.DomainAttribute)
-	if !ok || domain == "" {
-		return tenant, fmt.Errorf("missing required attribute %q for item %q", input.DomainAttribute, name)
+	domains, ok := getDomainsAttr(item, input.DomainsAttribute)
+	if !ok || len(domains) == 0 {
+		return tenant, fmt.Errorf("missing required attribute %q for item %q", input.DomainsAttribute, name)
 	}
-	tenant.Domain = domain
+	tenant.Domains = domains
 
 	if input.EnabledAttribute != "" {
 		if v, ok := getBoolAttr(item, input.EnabledAttribute); ok {
@@ -144,19 +185,79 @@ func mapDynamoItem(item map[string]dbtypes.AttributeValue, input *ScanTenantsInp
 		}
 	}
 
-	if input.ConnectionGroupIdAttribute != "" {
-		if v, ok := getStringAttr(item, input.ConnectionGroupIdAttribute); ok && v != "" {
-			tenant.ConnectionGroupId = &v
+	setOptionalString(item, input.ConnectionGroupIdAttribute, &tenant.ConnectionGroupId)
+	setOptionalString(item, input.CertificateArnAttribute, &tenant.CertificateArn)
+
+	setOptionalString(item, input.ValidationTokenHostAttribute, &tenant.ValidationTokenHost)
+	setOptionalString(item, input.PrimaryDomainNameAttribute, &tenant.PrimaryDomainName)
+	setOptionalString(item, input.CertificateTransparencyLoggingPreferenceAttribute, &tenant.CertificateTransparencyLoggingPreference)
+
+	setOptionalString(item, input.DNSProviderAttribute, &tenant.DNSProvider)
+	setOptionalString(item, input.HostedZoneIdAttribute, &tenant.HostedZoneId)
+	setOptionalString(item, input.DNSAssumeRoleArnAttribute, &tenant.DNSAssumeRoleArn)
+
+	if input.DNSTTLAttribute != "" {
+		if v, ok := getNumberAttr(item, input.DNSTTLAttribute); ok {
+			tenant.DNSTTL = &v
 		}
 	}
 
-	if input.CertificateArnAttribute != "" {
-		if v, ok := getStringAttr(item, input.CertificateArnAttribute); ok && v != "" {
-			tenant.CertificateArn = &v
+	setOptionalString(item, input.WebAclActionAttribute, &tenant.WebAclAction)
+	setOptionalString(item, input.WebAclArnAttribute, &tenant.WebAclArn)
+	setOptionalString(item, input.GeoRestrictionTypeAttribute, &tenant.GeoRestrictionType)
+
+	if input.GeoLocationsAttribute != "" {
+		if v, ok := getStringSetAttr(item, input.GeoLocationsAttribute); ok {
+			tenant.GeoLocations = v
+		}
+	}
+
+	if input.ParametersAttribute != "" {
+		if v, ok := getMapStringAttr(item, input.ParametersAttribute); ok {
+			tenant.Parameters = v
+		}
+	}
+
+	if input.TagsAttribute != "" {
+		if v, ok := getMapStringAttr(item, input.TagsAttribute); ok {
+			tenant.Tags = v
 		}
 	}
 
 	return tenant, nil
+}
+
+// setOptionalString reads a string attribute and sets the target pointer if
+// the attribute mapping is configured and the value is non-empty.
+func setOptionalString(item map[string]dbtypes.AttributeValue, attr string, target **string) {
+	if attr == "" {
+		return
+	}
+	if v, ok := getStringAttr(item, attr); ok && v != "" {
+		*target = &v
+	}
+}
+
+// getDomainsAttr reads a domains attribute that can be either a String (S) for
+// a single domain or a StringSet (SS) for multiple domains.
+func getDomainsAttr(item map[string]dbtypes.AttributeValue, key string) ([]string, bool) {
+	av, ok := item[key]
+	if !ok {
+		return nil, false
+	}
+	if s, ok := av.(*dbtypes.AttributeValueMemberS); ok {
+		if s.Value == "" {
+			return nil, false
+		}
+		return []string{s.Value}, true
+	}
+	if ss, ok := av.(*dbtypes.AttributeValueMemberSS); ok {
+		if len(ss.Value) == 0 {
+			return nil, false
+		}
+		return ss.Value, true
+	}
+	return nil, false
 }
 
 func getStringAttr(item map[string]dbtypes.AttributeValue, key string) (string, bool) {
@@ -178,11 +279,53 @@ func getBoolAttr(item map[string]dbtypes.AttributeValue, key string) (bool, bool
 	if b, ok := av.(*dbtypes.AttributeValueMemberBOOL); ok {
 		return b.Value, true
 	}
-	// Also handle string "true"/"false" for flexibility
 	if s, ok := av.(*dbtypes.AttributeValueMemberS); ok {
 		return strings.EqualFold(s.Value, "true"), true
 	}
 	return false, false
+}
+
+func getNumberAttr(item map[string]dbtypes.AttributeValue, key string) (int64, bool) {
+	av, ok := item[key]
+	if !ok {
+		return 0, false
+	}
+	if n, ok := av.(*dbtypes.AttributeValueMemberN); ok {
+		var v int64
+		if _, err := fmt.Sscanf(n.Value, "%d", &v); err == nil {
+			return v, true
+		}
+	}
+	return 0, false
+}
+
+func getStringSetAttr(item map[string]dbtypes.AttributeValue, key string) ([]string, bool) {
+	av, ok := item[key]
+	if !ok {
+		return nil, false
+	}
+	if ss, ok := av.(*dbtypes.AttributeValueMemberSS); ok && len(ss.Value) > 0 {
+		return ss.Value, true
+	}
+	return nil, false
+}
+
+func getMapStringAttr(item map[string]dbtypes.AttributeValue, key string) (map[string]string, bool) {
+	av, ok := item[key]
+	if !ok {
+		return nil, false
+	}
+	m, ok := av.(*dbtypes.AttributeValueMemberM)
+	if !ok || len(m.Value) == 0 {
+		return nil, false
+	}
+	result := make(map[string]string, len(m.Value))
+	for k, v := range m.Value {
+		if s, ok := v.(*dbtypes.AttributeValueMemberS); ok {
+			result[k] = s.Value
+		}
+	}
+	return result, len(result) > 0
 }
 
 // classifyDynamoDBError maps DynamoDB errors to domain error types.

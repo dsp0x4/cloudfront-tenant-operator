@@ -46,15 +46,16 @@ The controller follows a multi-phase reconciliation loop:
 
 The `TenantSource` controller manages `DistributionTenant` CRs from an external data source (currently DynamoDB).
 
-1. **Poll**: Scan the DynamoDB table and map items to desired `DistributionTenant` specs using the configured attribute mappings.
-2. **Diff**: Compare desired state (DynamoDB) with existing owned `DistributionTenant` CRs.
-3. **Sync**:
+1. **Poll**: Scan the DynamoDB table and map items to `TenantItem` structs using the configured attribute mappings. Domains can be a single String (S) or a StringSet (SS).
+2. **Build spec**: For each item, start from the `spec.template` baseline and overlay per-item DynamoDB values. Precedence: **DynamoDB item value > template value > K8s default**. Certificate handling follows three-way precedence: explicit `certificateArn` > managed cert with per-item overrides > template managed cert.
+3. **Diff**: Compare desired state (template + DynamoDB) with existing owned `DistributionTenant` CRs.
+4. **Sync**:
     - **Create**: DynamoDB item exists, no matching CR -> create CR with owner reference and source label.
-    - **Update**: DynamoDB item exists, CR exists but spec differs -> update CR.
+    - **Update**: DynamoDB item exists, CR exists but spec differs -> update CR (auto-attached certificate ARN is preserved).
     - **Delete**: CR exists, no matching DynamoDB item -> delete CR (the `DistributionTenant` controller handles AWS cleanup).
-4. **Dry run**: If `spec.dryRun` is `true`, populate `status.pendingChanges` instead of mutating CRs.
-5. **Status**: Update `lastPollTime`, `tenantsDiscovered`, `tenantsCreated`, `tenantsUpdated`, and conditions.
-6. **Requeue**: After `pollInterval` (default 5 minutes).
+5. **Dry run**: If `spec.dryRun` is `true`, populate `status.pendingChanges` instead of mutating CRs.
+6. **Status**: Update `lastPollTime`, `tenantsDiscovered`, `tenantsCreated`, `tenantsUpdated`, `tenantsDeleted`, and conditions.
+7. **Requeue**: After `pollInterval` (default 5 minutes).
 
 ### TenantSource Deletion
 

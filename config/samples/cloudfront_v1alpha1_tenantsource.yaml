@@ -14,19 +14,55 @@ spec:
   pollInterval: "5m"
   dryRun: false
 
+  # Template defines baseline values applied to every tenant.
+  # DynamoDB items can override individual fields via attribute mappings.
+  template:
+    enabled: true
+    dns:
+      provider: "route53"
+      hostedZoneId: "Z1234567890"
+      ttl: 300
+    # managedCertificateRequest:
+    #   validationTokenHost: "cloudfront"
+    # parameters:
+    #   - name: "env"
+    #     value: "production"
+    # tags:
+    #   - key: "environment"
+    #     value: "production"
+    # customizations:
+    #   geoRestrictions:
+    #     restrictionType: "none"
+
   dynamodb:
     tableName: "tenants"
     region: "us-east-1"
-    # Attribute mappings (defaults shown):
-    nameAttribute: "name"       # partition key -> DistributionTenant metadata.name
-    domainAttribute: "domain"   # -> spec.domains[0].domain
-    # Optional attribute mappings:
-    # enabledAttribute: "enabled"                     # -> spec.enabled (bool)
-    # connectionGroupIdAttribute: "connection_group"  # -> spec.connectionGroupId
-    # certificateArnAttribute: "cert_arn"             # -> spec.customizations.certificate.arn
+    # Required attribute mappings (defaults shown):
+    nameAttribute: "name"         # partition key -> DistributionTenant metadata.name
+    domainsAttribute: "domains"   # String (S) or StringSet (SS) -> spec.domains
 
-  # Optional: request a CloudFront-managed ACM certificate for every tenant.
-  # primaryDomainName is automatically set to each tenant's domain.
-  # If a DynamoDB item has a certificateArn, it takes precedence over this.
-  # managedCertificateRequest:
-  #   validationTokenHost: "cloudfront"
+    # Optional attribute mappings (override template values per DynamoDB item):
+    # enabledAttribute: "enabled"                     # bool -> spec.enabled
+    # connectionGroupIdAttribute: "connection_group"  # string -> spec.connectionGroupId
+    # certificateArnAttribute: "cert_arn"             # string -> spec.customizations.certificate.arn (overrides managed cert)
+
+    # Managed certificate overrides:
+    # validationTokenHostAttribute: "validation_host"
+    # primaryDomainNameAttribute: "primary_domain"
+    # certificateTransparencyLoggingPreferenceAttribute: "ct_logging"
+
+    # DNS overrides:
+    # dnsProviderAttribute: "dns_provider"
+    # hostedZoneIdAttribute: "hosted_zone"
+    # dnsTTLAttribute: "dns_ttl"                      # number (N) -> spec.dns.ttl
+    # dnsAssumeRoleArnAttribute: "dns_role"
+
+    # Customization overrides:
+    # webAclActionAttribute: "waf_action"
+    # webAclArnAttribute: "waf_arn"
+    # geoRestrictionTypeAttribute: "geo_type"
+    # geoLocationsAttribute: "geo_locations"           # StringSet (SS) -> spec.customizations.geoRestrictions.locations
+
+    # Parameters and tags (DynamoDB Map type):
+    # parametersAttribute: "params"                    # Map (M) -> spec.parameters
+    # tagsAttribute: "tags"                            # Map (M) -> spec.tags

@@ -80,30 +80,79 @@ spec:
                   certificateArnAttribute:
                     description: |-
                       certificateArnAttribute is the DynamoDB attribute that maps to
-                      spec.customizations.certificate.arn. The ARN must refer to an ACM
+                      spec.customizations.certificate.arn. When present, takes precedence
+                      over template.managedCertificateRequest. The ARN must refer to an ACM
                       certificate in us-east-1.
+                    type: string
+                  certificateTransparencyLoggingPreferenceAttribute:
+                    description: |-
+                      certificateTransparencyLoggingPreferenceAttribute is the DynamoDB
+                      attribute that overrides the CT logging preference per tenant.
                     type: string
                   connectionGroupIdAttribute:
                     description: |-
                       connectionGroupIdAttribute is the DynamoDB attribute that maps to
                       spec.connectionGroupId.
                     type: string
-                  domainAttribute:
-                    default: domain
+                  dnsAssumeRoleArnAttribute:
                     description: |-
-                      domainAttribute is the DynamoDB attribute that maps to the tenant's
-                      domain (single domain string per item). Defaults to "domain".
+                      dnsAssumeRoleArnAttribute is the DynamoDB attribute that overrides
+                      template.dns.assumeRoleArn per tenant.
+                    type: string
+                  dnsProviderAttribute:
+                    description: |-
+                      dnsProviderAttribute is the DynamoDB attribute that overrides
+                      template.dns.provider per tenant.
+                    type: string
+                  dnsTTLAttribute:
+                    description: |-
+                      dnsTTLAttribute is the DynamoDB attribute (number) that overrides
+                      template.dns.ttl per tenant.
+                    type: string
+                  domainsAttribute:
+                    default: domains
+                    description: |-
+                      domainsAttribute is the DynamoDB attribute that maps to the tenant's
+                      domains. Accepts a String (S) for a single domain or a StringSet (SS)
+                      for multiple domains. Defaults to "domains".
                     type: string
                   enabledAttribute:
                     description: |-
                       enabledAttribute is the DynamoDB attribute (boolean) that maps to
-                      spec.enabled. If not set, defaults to true.
+                      spec.enabled. If not set, uses the template value or defaults to true.
+                    type: string
+                  geoLocationsAttribute:
+                    description: |-
+                      geoLocationsAttribute is the DynamoDB attribute (StringSet) that
+                      overrides template.customizations.geoRestrictions.locations per tenant.
+                    type: string
+                  geoRestrictionTypeAttribute:
+                    description: |-
+                      geoRestrictionTypeAttribute is the DynamoDB attribute that overrides
+                      template.customizations.geoRestrictions.restrictionType per tenant.
+                    type: string
+                  hostedZoneIdAttribute:
+                    description: |-
+                      hostedZoneIdAttribute is the DynamoDB attribute that overrides
+                      template.dns.hostedZoneId per tenant.
                     type: string
                   nameAttribute:
                     default: name
                     description: |-
                       nameAttribute is the DynamoDB attribute that maps to the tenant name
                       (used as the DistributionTenant resource name). Defaults to "name".
+                    type: string
+                  parametersAttribute:
+                    description: |-
+                      parametersAttribute is the DynamoDB attribute (Map) that overrides
+                      or merges with template.parameters per tenant. The map keys are
+                      parameter names and values are parameter values.
+                    type: string
+                  primaryDomainNameAttribute:
+                    description: |-
+                      primaryDomainNameAttribute is the DynamoDB attribute that overrides
+                      the primary domain for the managed certificate. If not set, defaults
+                      to the tenant's first domain.
                     type: string
                   region:
                     description: |-
@@ -113,36 +162,29 @@ spec:
                   tableName:
                     description: tableName is the DynamoDB table to scan.
                     type: string
+                  tagsAttribute:
+                    description: |-
+                      tagsAttribute is the DynamoDB attribute (Map) that overrides or merges
+                      with template.tags per tenant. The map keys are tag keys and values
+                      are tag values.
+                    type: string
+                  validationTokenHostAttribute:
+                    description: |-
+                      validationTokenHostAttribute is the DynamoDB attribute that overrides
+                      template.managedCertificateRequest.validationTokenHost per tenant.
+                    type: string
+                  webAclActionAttribute:
+                    description: |-
+                      webAclActionAttribute is the DynamoDB attribute that overrides
+                      template.customizations.webAcl.action per tenant.
+                    type: string
+                  webAclArnAttribute:
+                    description: |-
+                      webAclArnAttribute is the DynamoDB attribute that overrides
+                      template.customizations.webAcl.arn per tenant.
+                    type: string
                 required:
                 - tableName
-                type: object
-              managedCertificateRequest:
-                description: |-
-                  managedCertificateRequest configures a CloudFront-managed ACM certificate
-                  for all tenants created by this source. The primaryDomainName is
-                  automatically set to each tenant's domain. If a DynamoDB item provides a
-                  certificateArn (via certificateArnAttribute), it takes precedence and
-                  the managed certificate is not used for that tenant.
-                properties:
-                  certificateTransparencyLoggingPreference:
-                    description: certificateTransparencyLoggingPreference controls
-                      CT logging.
-                    enum:
-                    - enabled
-                    - disabled
-                    type: string
-                  validationTokenHost:
-                    description: |-
-                      validationTokenHost specifies how the HTTP validation token is served.
-                      "cloudfront" means CloudFront serves the token automatically (requires
-                      DNS CNAME to be pointing to CloudFront before the request).
-                      "self-hosted" means you serve the validation token from your own infrastructure.
-                    enum:
-                    - cloudfront
-                    - self-hosted
-                    type: string
-                required:
-                - validationTokenHost
                 type: object
               pollInterval:
                 default: 5m
@@ -187,6 +229,196 @@ spec:
                   targetNamespace is the Kubernetes namespace where DistributionTenant
                   CRs will be created. Defaults to the TenantSource's namespace.
                 type: string
+              template:
+                description: |-
+                  template defines default values applied to every DistributionTenant
+                  created by this source. DynamoDB items can override individual fields
+                  when the corresponding attribute mapping is configured.
+                properties:
+                  connectionGroupId:
+                    description: connectionGroupId is the default connection group
+                      for all tenants.
+                    type: string
+                  customizations:
+                    description: customizations allows overriding distribution-level
+                      settings.
+                    properties:
+                      certificate:
+                        description: certificate configures an ACM certificate override
+                          for this tenant.
+                        properties:
+                          arn:
+                            description: arn is the ARN of the ACM certificate to
+                              use for this tenant.
+                            type: string
+                        required:
+                        - arn
+                        type: object
+                        x-kubernetes-validations:
+                        - message: ACM certificates used with CloudFront must be in
+                            the us-east-1 region
+                          rule: self.arn.startsWith('arn:aws:acm:us-east-1:')
+                      geoRestrictions:
+                        description: geoRestrictions configures geographic restrictions
+                          for this tenant.
+                        properties:
+                          locations:
+                            description: locations is the list of ISO 3166-1 alpha-2
+                              country codes.
+                            items:
+                              type: string
+                            type: array
+                          restrictionType:
+                            description: restrictionType is the method for restricting
+                              content distribution by country.
+                            enum:
+                            - none
+                            - whitelist
+                            - blacklist
+                            type: string
+                        required:
+                        - restrictionType
+                        type: object
+                      webAcl:
+                        description: webAcl configures the WAF web ACL for this tenant.
+                        properties:
+                          action:
+                            description: |-
+                              action specifies what to do with the WAF web ACL.
+                              "override" uses a separate WAF web ACL for this tenant.
+                              "disable" removes WAF protection entirely.
+                            enum:
+                            - disable
+                            - override
+                            type: string
+                          arn:
+                            description: arn is the ARN of the WAF web ACL. Required
+                              when action is "override".
+                            type: string
+                        required:
+                        - action
+                        type: object
+                        x-kubernetes-validations:
+                        - message: arn is required when action is 'override'
+                          rule: self.action != 'override' || has(self.arn)
+                    type: object
+                  dns:
+                    description: dns configures automatic DNS record management for
+                      all tenants.
+                    properties:
+                      assumeRoleArn:
+                        description: |-
+                          assumeRoleArn is the ARN of an IAM role to assume when making Route53
+                          API calls. Use this when the hosted zone is in a different AWS account
+                          than the operator. Only affects Route53 operations (not CloudFront).
+                        type: string
+                      hostedZoneId:
+                        description: |-
+                          hostedZoneId is the Route53 hosted zone ID where records will be managed.
+                          Required when provider is "route53".
+                        type: string
+                      provider:
+                        description: provider is the DNS provider to use for record
+                          management.
+                        enum:
+                        - route53
+                        type: string
+                      ttl:
+                        default: 300
+                        description: |-
+                          ttl is the Time-To-Live for DNS CNAME records in seconds.
+                          Must be between 60 and 172800.
+                          Defaults to 300 seconds.
+                        format: int64
+                        maximum: 172800
+                        minimum: 60
+                        type: integer
+                    required:
+                    - provider
+                    type: object
+                    x-kubernetes-validations:
+                    - message: hostedZoneId is required when provider is 'route53'
+                      rule: self.provider != 'route53' || has(self.hostedZoneId)
+                  enabled:
+                    description: enabled indicates whether tenants should serve traffic.
+                      Defaults to true.
+                    type: boolean
+                  managedCertificateRequest:
+                    description: |-
+                      managedCertificateRequest configures a CloudFront-managed ACM certificate
+                      for tenants. If a DynamoDB item provides a certificateArn, it takes
+                      precedence and the managed certificate is not used for that tenant.
+                      The primaryDomainName defaults to the tenant's first domain if not set.
+                    properties:
+                      certificateTransparencyLoggingPreference:
+                        description: certificateTransparencyLoggingPreference controls
+                          CT logging.
+                        enum:
+                        - enabled
+                        - disabled
+                        type: string
+                      primaryDomainName:
+                        description: |-
+                          primaryDomainName is the primary domain for the managed certificate.
+                          Must be one of the domains listed in spec.domains.
+                          If not set, defaults to the first domain in spec.domains.
+                        type: string
+                      validationTokenHost:
+                        description: |-
+                          validationTokenHost specifies how the HTTP validation token is served.
+                          "cloudfront" means CloudFront serves the token automatically (requires
+                          DNS CNAME to be pointing to CloudFront before the request).
+                          "self-hosted" means you serve the validation token from your own infrastructure.
+                        enum:
+                        - cloudfront
+                        - self-hosted
+                        type: string
+                    required:
+                    - validationTokenHost
+                    type: object
+                  parameters:
+                    description: parameters is a list of default key-value parameter
+                      values.
+                    items:
+                      description: Parameter is a key-value pair passed to the multi-tenant
+                        distribution template.
+                      properties:
+                        name:
+                          description: name is the parameter name.
+                          maxLength: 128
+                          minLength: 1
+                          pattern: ^[a-zA-Z0-9\-_]+$
+                          type: string
+                        value:
+                          description: value is the parameter value.
+                          maxLength: 256
+                          minLength: 1
+                          type: string
+                      required:
+                      - name
+                      - value
+                      type: object
+                    type: array
+                  tags:
+                    description: tags is a list of default key-value tags for all
+                      tenants.
+                    items:
+                      description: Tag is a key-value pair for resource tagging.
+                      properties:
+                        key:
+                          description: key is the tag key.
+                          maxLength: 128
+                          minLength: 1
+                          type: string
+                        value:
+                          description: value is the tag value.
+                          maxLength: 256
+                          type: string
+                      required:
+                      - key
+                      type: object
+                    type: array
+                type: object
             required:
             - distributionId
             - provider

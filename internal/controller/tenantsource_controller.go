@@ -280,7 +280,7 @@ func (r *TenantSourceReconciler) syncNewTenant(
 	if isDryRun {
 		sr.pendingChanges = append(sr.pendingChanges, cloudfrontv1alpha1.PendingChange{
 			Action: "create", TenantName: name,
-			Description: fmt.Sprintf("New tenant from DynamoDB (domain: %s)", item.Domain),
+			Description: fmt.Sprintf("New tenant from DynamoDB (domains: %v)", item.Domains),
 		})
 		return
 	}
@@ -407,69 +407,278 @@ func (r *TenantSourceReconciler) isOwnedBySource(dt *cloudfrontv1alpha1.Distribu
 	return false
 }
 
-// buildTenantSpec creates a DistributionTenantSpec from the TenantSource config
-// and a DynamoDB TenantItem.
+// buildTenantSpec creates a DistributionTenantSpec by starting from the
+// TenantSource template and overlaying per-item DynamoDB values.
+// Precedence: DynamoDB item value > template value > K8s default.
 func (r *TenantSourceReconciler) buildTenantSpec(source *cloudfrontv1alpha1.TenantSource, item cfaws.TenantItem) cloudfrontv1alpha1.DistributionTenantSpec {
+	tmpl := source.Spec.Template
+
 	spec := cloudfrontv1alpha1.DistributionTenantSpec{
 		DistributionId: source.Spec.DistributionId,
-		Domains: []cloudfrontv1alpha1.DomainSpec{
-			{Domain: item.Domain},
-		},
 	}
 
-	if item.Enabled != nil {
+	// Domains — always from DynamoDB item.
+	for _, d := range item.Domains {
+		spec.Domains = append(spec.Domains, cloudfrontv1alpha1.DomainSpec{Domain: d})
+	}
+
+	// Enabled: item > template > true.
+	switch {
+	case item.Enabled != nil:
 		spec.Enabled = item.Enabled
-	} else {
+	case tmpl != nil && tmpl.Enabled != nil:
+		spec.Enabled = tmpl.Enabled
+	default:
 		defaultEnabled := true
 		spec.Enabled = &defaultEnabled
 	}
 
-	if item.ConnectionGroupId != nil {
-		spec.ConnectionGroupId = item.ConnectionGroupId
-	}
+	// ConnectionGroupId: item > template.
+	spec.ConnectionGroupId = firstNonNilStr(item.ConnectionGroupId, ptrFromTemplate(tmpl, func(t *cloudfrontv1alpha1.TenantTemplate) *string { return t.ConnectionGroupId }))
 
-	if item.CertificateArn != nil {
-		spec.Customizations = &cloudfrontv1alpha1.Customizations{
-			Certificate: &cloudfrontv1alpha1.CertificateCustomization{
-				Arn: *item.CertificateArn,
-			},
-		}
-	} else if source.Spec.ManagedCertificateRequest != nil {
-		spec.ManagedCertificateRequest = &cloudfrontv1alpha1.ManagedCertificateRequest{
-			ValidationTokenHost:                      source.Spec.ManagedCertificateRequest.ValidationTokenHost,
-			PrimaryDomainName:                        item.Domain,
-			CertificateTransparencyLoggingPreference: source.Spec.ManagedCertificateRequest.CertificateTransparencyLoggingPreference,
-		}
-	}
+	// Certificate: explicit ARN > managed cert request.
+	r.buildCertificateFields(&spec, tmpl, item)
+
+	// DNS: overlay item fields on template.
+	r.buildDNSFields(&spec, tmpl, item)
+
+	// Customizations (WebACL, GeoRestrictions): overlay item on template.
+	r.buildCustomizationFields(&spec, tmpl, item)
+
+	// Parameters: item replaces template entirely if present.
+	r.buildParameterFields(&spec, tmpl, item)
+
+	// Tags: item replaces template entirely if present.
+	r.buildTagFields(&spec, tmpl, item)
 
 	return spec
 }
 
-// tenantSpecEqual compares two DistributionTenantSpec values for the fields
-// managed by TenantSource. It intentionally ignores fields that TenantSource
-// does not manage (DNS, tags, parameters).
+func (r *TenantSourceReconciler) buildCertificateFields(
+	spec *cloudfrontv1alpha1.DistributionTenantSpec,
+	tmpl *cloudfrontv1alpha1.TenantTemplate,
+	item cfaws.TenantItem,
+) {
+	if item.CertificateArn != nil {
+		if spec.Customizations == nil {
+			spec.Customizations = &cloudfrontv1alpha1.Customizations{}
+		}
+		spec.Customizations.Certificate = &cloudfrontv1alpha1.CertificateCustomization{
+			Arn: *item.CertificateArn,
+		}
+		return
+	}
+
+	var tmplCert *cloudfrontv1alpha1.ManagedCertificateRequest
+	if tmpl != nil {
+		tmplCert = tmpl.ManagedCertificateRequest
+	}
+	if tmplCert == nil {
+		return
+	}
+
+	mcr := &cloudfrontv1alpha1.ManagedCertificateRequest{
+		ValidationTokenHost:                      tmplCert.ValidationTokenHost,
+		PrimaryDomainName:                        tmplCert.PrimaryDomainName,
+		CertificateTransparencyLoggingPreference: tmplCert.CertificateTransparencyLoggingPreference,
+	}
+
+	if item.ValidationTokenHost != nil {
+		mcr.ValidationTokenHost = *item.ValidationTokenHost
+	}
+	if item.PrimaryDomainName != nil {
+		mcr.PrimaryDomainName = *item.PrimaryDomainName
+	}
+	if item.CertificateTransparencyLoggingPreference != nil {
+		mcr.CertificateTransparencyLoggingPreference = item.CertificateTransparencyLoggingPreference
+	}
+
+	if mcr.PrimaryDomainName == "" && len(item.Domains) > 0 {
+		mcr.PrimaryDomainName = item.Domains[0]
+	}
+
+	spec.ManagedCertificateRequest = mcr
+}
+
+func (r *TenantSourceReconciler) buildDNSFields(
+	spec *cloudfrontv1alpha1.DistributionTenantSpec,
+	tmpl *cloudfrontv1alpha1.TenantTemplate,
+	item cfaws.TenantItem,
+) {
+	var base *cloudfrontv1alpha1.DNSConfig
+	if tmpl != nil && tmpl.DNS != nil {
+		cp := *tmpl.DNS
+		base = &cp
+	}
+
+	hasOverride := item.DNSProvider != nil || item.HostedZoneId != nil ||
+		item.DNSTTL != nil || item.DNSAssumeRoleArn != nil
+
+	if base == nil && !hasOverride {
+		return
+	}
+	if base == nil {
+		base = &cloudfrontv1alpha1.DNSConfig{}
+	}
+	if item.DNSProvider != nil {
+		base.Provider = *item.DNSProvider
+	}
+	if item.HostedZoneId != nil {
+		base.HostedZoneId = item.HostedZoneId
+	}
+	if item.DNSTTL != nil {
+		base.TTL = item.DNSTTL
+	}
+	if item.DNSAssumeRoleArn != nil {
+		base.AssumeRoleArn = item.DNSAssumeRoleArn
+	}
+	spec.DNS = base
+}
+
+func (r *TenantSourceReconciler) buildCustomizationFields(
+	spec *cloudfrontv1alpha1.DistributionTenantSpec,
+	tmpl *cloudfrontv1alpha1.TenantTemplate,
+	item cfaws.TenantItem,
+) {
+	var tmplCustom *cloudfrontv1alpha1.Customizations
+	if tmpl != nil {
+		tmplCustom = tmpl.Customizations
+	}
+
+	// WebACL
+	hasWebAcl := item.WebAclAction != nil
+	var webAcl *cloudfrontv1alpha1.WebAclCustomization
+	if tmplCustom != nil && tmplCustom.WebAcl != nil {
+		cp := *tmplCustom.WebAcl
+		webAcl = &cp
+	}
+	if hasWebAcl {
+		if webAcl == nil {
+			webAcl = &cloudfrontv1alpha1.WebAclCustomization{}
+		}
+		webAcl.Action = *item.WebAclAction
+	}
+	if item.WebAclArn != nil {
+		if webAcl == nil {
+			webAcl = &cloudfrontv1alpha1.WebAclCustomization{}
+		}
+		webAcl.Arn = item.WebAclArn
+	}
+
+	// GeoRestrictions
+	hasGeo := item.GeoRestrictionType != nil || item.GeoLocations != nil
+	var geo *cloudfrontv1alpha1.GeoRestrictionCustomization
+	if tmplCustom != nil && tmplCustom.GeoRestrictions != nil {
+		cp := *tmplCustom.GeoRestrictions
+		geo = &cp
+	}
+	if hasGeo {
+		if geo == nil {
+			geo = &cloudfrontv1alpha1.GeoRestrictionCustomization{}
+		}
+		if item.GeoRestrictionType != nil {
+			geo.RestrictionType = *item.GeoRestrictionType
+		}
+		if item.GeoLocations != nil {
+			geo.Locations = item.GeoLocations
+		}
+	}
+
+	if webAcl != nil || geo != nil {
+		if spec.Customizations == nil {
+			spec.Customizations = &cloudfrontv1alpha1.Customizations{}
+		}
+		spec.Customizations.WebAcl = webAcl
+		spec.Customizations.GeoRestrictions = geo
+	}
+}
+
+func (r *TenantSourceReconciler) buildParameterFields(
+	spec *cloudfrontv1alpha1.DistributionTenantSpec,
+	tmpl *cloudfrontv1alpha1.TenantTemplate,
+	item cfaws.TenantItem,
+) {
+	if item.Parameters != nil {
+		for k, v := range item.Parameters {
+			spec.Parameters = append(spec.Parameters, cloudfrontv1alpha1.Parameter{Name: k, Value: v})
+		}
+		return
+	}
+	if tmpl != nil && len(tmpl.Parameters) > 0 {
+		spec.Parameters = make([]cloudfrontv1alpha1.Parameter, len(tmpl.Parameters))
+		copy(spec.Parameters, tmpl.Parameters)
+	}
+}
+
+func (r *TenantSourceReconciler) buildTagFields(
+	spec *cloudfrontv1alpha1.DistributionTenantSpec,
+	tmpl *cloudfrontv1alpha1.TenantTemplate,
+	item cfaws.TenantItem,
+) {
+	if item.Tags != nil {
+		for k, v := range item.Tags {
+			spec.Tags = append(spec.Tags, cloudfrontv1alpha1.Tag{Key: k, Value: &v})
+		}
+		return
+	}
+	if tmpl != nil && len(tmpl.Tags) > 0 {
+		spec.Tags = make([]cloudfrontv1alpha1.Tag, len(tmpl.Tags))
+		copy(spec.Tags, tmpl.Tags)
+	}
+}
+
+// tenantSpecEqual compares two DistributionTenantSpec values for all fields
+// managed by TenantSource (which is now all spec fields).
 func tenantSpecEqual(a, b cloudfrontv1alpha1.DistributionTenantSpec) bool {
 	if a.DistributionId != b.DistributionId {
 		return false
 	}
-
-	if len(a.Domains) != len(b.Domains) {
+	if !domainsEqual(a.Domains, b.Domains) {
 		return false
 	}
-	for i := range a.Domains {
-		if a.Domains[i].Domain != b.Domains[i].Domain {
-			return false
-		}
-	}
-
 	if !boolPtrEqual(a.Enabled, b.Enabled) {
 		return false
 	}
-
 	if !strPtrEqual(a.ConnectionGroupId, b.ConnectionGroupId) {
 		return false
 	}
+	if !certificateFieldsEqual(a, b) {
+		return false
+	}
+	if !managedCertRequestEqual(a.ManagedCertificateRequest, b.ManagedCertificateRequest) {
+		return false
+	}
+	if !dnsConfigEqual(a.DNS, b.DNS) {
+		return false
+	}
+	if !webAclEqual(a.Customizations, b.Customizations) {
+		return false
+	}
+	if !geoRestrictionsEqual(a.Customizations, b.Customizations) {
+		return false
+	}
+	if !parametersEqual(a.Parameters, b.Parameters) {
+		return false
+	}
+	if !tagsEqual(a.Tags, b.Tags) {
+		return false
+	}
+	return true
+}
 
+func domainsEqual(a, b []cloudfrontv1alpha1.DomainSpec) bool {
+	as := make([]string, len(a))
+	for i, d := range a {
+		as[i] = d.Domain
+	}
+	bs := make([]string, len(b))
+	for i, d := range b {
+		bs[i] = d.Domain
+	}
+	return stringSliceEqual(as, bs)
+}
+
+func certificateFieldsEqual(a, b cloudfrontv1alpha1.DistributionTenantSpec) bool {
 	aCert := ""
 	if a.Customizations != nil && a.Customizations.Certificate != nil {
 		aCert = a.Customizations.Certificate.Arn
@@ -482,43 +691,125 @@ func tenantSpecEqual(a, b cloudfrontv1alpha1.DistributionTenantSpec) bool {
 	// When the desired spec (b) uses managedCertificateRequest and has no
 	// explicit cert ARN, any cert ARN on the existing spec (a) was
 	// auto-attached by the DistributionTenant controller after the managed
-	// certificate was issued. Treat it as a managed field and skip the
-	// comparison to avoid a perpetual update cycle.
+	// certificate was issued. Skip the comparison to avoid a perpetual
+	// update cycle.
 	autoAttached := b.ManagedCertificateRequest != nil && bCert == "" && a.ManagedCertificateRequest != nil
-	if !autoAttached && aCert != bCert {
+	return autoAttached || aCert == bCert
+}
+
+func dnsConfigEqual(a, b *cloudfrontv1alpha1.DNSConfig) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
 		return false
 	}
-
-	if !managedCertRequestEqual(a.ManagedCertificateRequest, b.ManagedCertificateRequest) {
+	if a.Provider != b.Provider {
 		return false
 	}
+	if !strPtrEqual(a.HostedZoneId, b.HostedZoneId) {
+		return false
+	}
+	if !int64PtrEqual(a.TTL, b.TTL) {
+		return false
+	}
+	return strPtrEqual(a.AssumeRoleArn, b.AssumeRoleArn)
+}
 
+func webAclEqual(a, b *cloudfrontv1alpha1.Customizations) bool {
+	aWac := (*cloudfrontv1alpha1.WebAclCustomization)(nil)
+	bWac := (*cloudfrontv1alpha1.WebAclCustomization)(nil)
+	if a != nil {
+		aWac = a.WebAcl
+	}
+	if b != nil {
+		bWac = b.WebAcl
+	}
+	if aWac == nil && bWac == nil {
+		return true
+	}
+	if aWac == nil || bWac == nil {
+		return false
+	}
+	if aWac.Action != bWac.Action {
+		return false
+	}
+	return strPtrEqual(aWac.Arn, bWac.Arn)
+}
+
+func geoRestrictionsEqual(a, b *cloudfrontv1alpha1.Customizations) bool {
+	aGeo := (*cloudfrontv1alpha1.GeoRestrictionCustomization)(nil)
+	bGeo := (*cloudfrontv1alpha1.GeoRestrictionCustomization)(nil)
+	if a != nil {
+		aGeo = a.GeoRestrictions
+	}
+	if b != nil {
+		bGeo = b.GeoRestrictions
+	}
+	if aGeo == nil && bGeo == nil {
+		return true
+	}
+	if aGeo == nil || bGeo == nil {
+		return false
+	}
+	if aGeo.RestrictionType != bGeo.RestrictionType {
+		return false
+	}
+	return stringSliceEqual(aGeo.Locations, bGeo.Locations)
+}
+
+func parametersEqual(a, b []cloudfrontv1alpha1.Parameter) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	am := make(map[string]string, len(a))
+	for _, p := range a {
+		am[p.Name] = p.Value
+	}
+	for _, p := range b {
+		if am[p.Name] != p.Value {
+			return false
+		}
+	}
 	return true
 }
 
-// applyManagedFields updates only the fields in dst that TenantSource owns,
-// preserving unmanaged fields (DNSConfig, Tags, Parameters, and the
-// auto-attached certificate ARN from the DistributionTenant controller).
-func applyManagedFields(dst *cloudfrontv1alpha1.DistributionTenantSpec, src cloudfrontv1alpha1.DistributionTenantSpec) {
-	dst.DistributionId = src.DistributionId
-	dst.Domains = src.Domains
-	dst.Enabled = src.Enabled
-	dst.ConnectionGroupId = src.ConnectionGroupId
-	dst.ManagedCertificateRequest = src.ManagedCertificateRequest
+func tagsEqual(a, b []cloudfrontv1alpha1.Tag) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	am := make(map[string]*string, len(a))
+	for i := range a {
+		am[a[i].Key] = a[i].Value
+	}
+	for i := range b {
+		if !strPtrEqual(am[b[i].Key], b[i].Value) {
+			return false
+		}
+	}
+	return true
+}
 
-	if src.Customizations != nil && src.Customizations.Certificate != nil {
+// applyManagedFields copies the full desired spec onto the existing spec,
+// preserving only the auto-attached certificate ARN from the DistributionTenant
+// controller.
+func applyManagedFields(dst *cloudfrontv1alpha1.DistributionTenantSpec, src cloudfrontv1alpha1.DistributionTenantSpec) {
+	autoAttachedCert := (*cloudfrontv1alpha1.CertificateCustomization)(nil)
+	if src.ManagedCertificateRequest != nil && (src.Customizations == nil || src.Customizations.Certificate == nil) {
+		if dst.Customizations != nil && dst.Customizations.Certificate != nil {
+			cp := *dst.Customizations.Certificate
+			autoAttachedCert = &cp
+		}
+	}
+
+	*dst = src
+
+	if autoAttachedCert != nil {
 		if dst.Customizations == nil {
 			dst.Customizations = &cloudfrontv1alpha1.Customizations{}
 		}
-		dst.Customizations.Certificate = src.Customizations.Certificate
-	} else if src.ManagedCertificateRequest == nil {
-		if dst.Customizations != nil {
-			dst.Customizations.Certificate = nil
-		}
+		dst.Customizations.Certificate = autoAttachedCert
 	}
-	// When src uses managedCertificateRequest and has no explicit certificate,
-	// leave dst.Customizations.Certificate untouched — it holds the
-	// auto-attached ARN from the DistributionTenant controller.
 }
 
 func managedCertRequestEqual(a, b *cloudfrontv1alpha1.ManagedCertificateRequest) bool {
@@ -557,18 +848,61 @@ func strPtrEqual(a, b *string) bool {
 	return *a == *b
 }
 
+func int64PtrEqual(a, b *int64) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
+}
+
+func stringSliceEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	set := make(map[string]struct{}, len(a))
+	for _, s := range a {
+		set[s] = struct{}{}
+	}
+	for _, s := range b {
+		if _, ok := set[s]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func firstNonNilStr(ptrs ...*string) *string {
+	for _, p := range ptrs {
+		if p != nil {
+			return p
+		}
+	}
+	return nil
+}
+
+func ptrFromTemplate[T any](tmpl *cloudfrontv1alpha1.TenantTemplate, fn func(*cloudfrontv1alpha1.TenantTemplate) T) T {
+	var zero T
+	if tmpl == nil {
+		return zero
+	}
+	return fn(tmpl)
+}
+
 func buildScanInput(cfg *cloudfrontv1alpha1.DynamoDBSourceConfig) *cfaws.ScanTenantsInput {
 	input := &cfaws.ScanTenantsInput{
-		TableName:       cfg.TableName,
-		NameAttribute:   "name",
-		DomainAttribute: "domain",
+		TableName:        cfg.TableName,
+		NameAttribute:    "name",
+		DomainsAttribute: "domains",
 	}
 
 	if cfg.NameAttribute != nil {
 		input.NameAttribute = *cfg.NameAttribute
 	}
-	if cfg.DomainAttribute != nil {
-		input.DomainAttribute = *cfg.DomainAttribute
+	if cfg.DomainsAttribute != nil {
+		input.DomainsAttribute = *cfg.DomainsAttribute
 	}
 	if cfg.EnabledAttribute != nil {
 		input.EnabledAttribute = *cfg.EnabledAttribute
@@ -578,6 +912,45 @@ func buildScanInput(cfg *cloudfrontv1alpha1.DynamoDBSourceConfig) *cfaws.ScanTen
 	}
 	if cfg.CertificateArnAttribute != nil {
 		input.CertificateArnAttribute = *cfg.CertificateArnAttribute
+	}
+	if cfg.ValidationTokenHostAttribute != nil {
+		input.ValidationTokenHostAttribute = *cfg.ValidationTokenHostAttribute
+	}
+	if cfg.PrimaryDomainNameAttribute != nil {
+		input.PrimaryDomainNameAttribute = *cfg.PrimaryDomainNameAttribute
+	}
+	if cfg.CertificateTransparencyLoggingPreferenceAttribute != nil {
+		input.CertificateTransparencyLoggingPreferenceAttribute = *cfg.CertificateTransparencyLoggingPreferenceAttribute
+	}
+	if cfg.DNSProviderAttribute != nil {
+		input.DNSProviderAttribute = *cfg.DNSProviderAttribute
+	}
+	if cfg.HostedZoneIdAttribute != nil {
+		input.HostedZoneIdAttribute = *cfg.HostedZoneIdAttribute
+	}
+	if cfg.DNSTTLAttribute != nil {
+		input.DNSTTLAttribute = *cfg.DNSTTLAttribute
+	}
+	if cfg.DNSAssumeRoleArnAttribute != nil {
+		input.DNSAssumeRoleArnAttribute = *cfg.DNSAssumeRoleArnAttribute
+	}
+	if cfg.WebAclActionAttribute != nil {
+		input.WebAclActionAttribute = *cfg.WebAclActionAttribute
+	}
+	if cfg.WebAclArnAttribute != nil {
+		input.WebAclArnAttribute = *cfg.WebAclArnAttribute
+	}
+	if cfg.GeoRestrictionTypeAttribute != nil {
+		input.GeoRestrictionTypeAttribute = *cfg.GeoRestrictionTypeAttribute
+	}
+	if cfg.GeoLocationsAttribute != nil {
+		input.GeoLocationsAttribute = *cfg.GeoLocationsAttribute
+	}
+	if cfg.ParametersAttribute != nil {
+		input.ParametersAttribute = *cfg.ParametersAttribute
+	}
+	if cfg.TagsAttribute != nil {
+		input.TagsAttribute = *cfg.TagsAttribute
 	}
 
 	return input
