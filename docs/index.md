@@ -10,7 +10,8 @@ A Kubernetes operator for managing [CloudFront Distribution Tenants](https://doc
 The operator manages `DistributionTenant` custom resources that map 1:1 to AWS CloudFront distribution tenants. It handles:
 
 - **Full lifecycle management** -- Create, update, and delete distribution tenants via the AWS API
-- **Disable-before-delete** -- Automatically disables tenants before deletion (required by AWS)
+- **TenantSource (DynamoDB)** -- Automatically discover and reconcile `DistributionTenant` resources from a DynamoDB table, with template-based defaults and per-item overrides
+- **Disable-before-delete** -- Automatically disables tenants before deletion (required by AWS), with optimistic deletion to minimize wait time
 - **ETag-based concurrency** -- Uses optimistic concurrency control on every update to prevent conflicts
 - **Drift detection** -- Three-way diff (spec vs observed generation vs AWS state) distinguishes user-initiated changes from external drift, with configurable policy
 - **Managed certificate lifecycle** -- Tracks CloudFront-managed ACM certificates through validation, issuance, and automatic attachment
@@ -25,7 +26,7 @@ The operator manages `DistributionTenant` custom resources that map 1:1 to AWS C
 
 Planned features:
 
-1. **TenantSource controller** -- Automatically discover and reconcile `DistributionTenant` resources from an external database (PostgreSQL or DynamoDB). The CRD is already defined (`TenantSource`); controller logic is not yet implemented. This enables SaaS platforms to manage tenants from their existing data store without manually creating Kubernetes resources.
+1. **Additional TenantSource backends** -- Extend the `TenantSource` controller to support PostgreSQL, MongoDB/DocumentDB, Redis, and other databases as external tenant sources, in addition to the existing DynamoDB support.
 2. **Webhook validation** -- Admission webhooks for deeper validation at create/update time (e.g., cross-field consistency, DNS reachability checks).
 3. **Multi-provider DNS** -- Support for DNS providers beyond Route53 (e.g., Cloudflare, Azure DNS).
 

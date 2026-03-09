@@ -107,10 +107,10 @@ var _ = Describe("DistributionTenant Controller", func() {
 			tenant := newTestTenant(tenantName, tenantNamespace, distributionId)
 			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
 
-			// First reconcile: adds finalizer (watch event handles requeue)
+			// First reconcile: adds finalizer
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(Equal(reconcile.Result{}))
+			Expect(result.RequeueAfter).To(Equal(time.Second))
 
 			// Verify finalizer was added
 			Expect(k8sClient.Get(ctx, namespacedName, tenant)).To(Succeed())

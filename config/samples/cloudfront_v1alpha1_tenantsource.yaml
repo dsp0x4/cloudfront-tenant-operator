@@ -1,26 +1,68 @@
-# TenantSource example: discover tenants from a PostgreSQL database.
-# The operator will periodically query the database and create/update
-# DistributionTenant CRs for each row returned.
-#
-# NOTE: This is a Phase 4 feature. The TenantSource controller is not yet
-# implemented. This sample serves as a design reference.
+# TenantSource example: discover tenants from a DynamoDB table.
+# The operator periodically scans the table and creates/updates/deletes
+# DistributionTenant CRs to match the table contents.
 apiVersion: cloudfront-tenant-operator.io/v1alpha1
 kind: TenantSource
 metadata:
   labels:
     app.kubernetes.io/name: cloudfront-tenant-operator
     app.kubernetes.io/managed-by: kustomize
-  name: postgres-tenants
+  name: dynamodb-tenants
 spec:
-  provider: postgres
+  provider: dynamodb
   distributionId: "E1XNX8R2GOAABC"
   pollInterval: "5m"
-  dryRun: true  # Start in dry-run to preview changes before applying
+  dryRun: false
 
-  postgres:
-    connectionSecretRef:
-      name: tenant-db-credentials
-    query: |
-      SELECT name, domain, enabled
-      FROM tenants
-      WHERE active = true
+  # Template defines baseline values applied to every tenant.
+  # DynamoDB items can override individual fields via attribute mappings.
+  template:
+    enabled: true
+    dns:
+      provider: "route53"
+      hostedZoneId: "Z1234567890"
+      ttl: 300
+    # managedCertificateRequest:
+    #   validationTokenHost: "cloudfront"
+    # parameters:
+    #   - name: "env"
+    #     value: "production"
+    # tags:
+    #   - key: "environment"
+    #     value: "production"
+    # customizations:
+    #   geoRestrictions:
+    #     restrictionType: "none"
+
+  dynamodb:
+    tableName: "tenants"
+    region: "us-east-1"
+    # Required attribute mappings (defaults shown):
+    nameAttribute: "name"         # partition key -> DistributionTenant metadata.name
+    domainsAttribute: "domains"   # String (S) or StringSet (SS) -> spec.domains
+
+    # Optional attribute mappings (override template values per DynamoDB item):
+    # enabledAttribute: "enabled"                     # bool -> spec.enabled
+    # connectionGroupIdAttribute: "connection_group"  # string -> spec.connectionGroupId
+    # certificateArnAttribute: "cert_arn"             # string -> spec.customizations.certificate.arn (overrides managed cert)
+
+    # Managed certificate overrides:
+    # validationTokenHostAttribute: "validation_host"
+    # primaryDomainNameAttribute: "primary_domain"
+    # certificateTransparencyLoggingPreferenceAttribute: "ct_logging"
+
+    # DNS overrides:
+    # dnsProviderAttribute: "dns_provider"
+    # hostedZoneIdAttribute: "hosted_zone"
+    # dnsTTLAttribute: "dns_ttl"                      # number (N) -> spec.dns.ttl
+    # dnsAssumeRoleArnAttribute: "dns_role"
+
+    # Customization overrides:
+    # webAclActionAttribute: "waf_action"
+    # webAclArnAttribute: "waf_arn"
+    # geoRestrictionTypeAttribute: "geo_type"
+    # geoLocationsAttribute: "geo_locations"           # StringSet (SS) -> spec.customizations.geoRestrictions.locations
+
+    # Parameters and tags (DynamoDB Map type):
+    # parametersAttribute: "params"                    # Map (M) -> spec.parameters
+    # tagsAttribute: "tags"                            # Map (M) -> spec.tags

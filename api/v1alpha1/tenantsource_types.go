@@ -57,6 +57,12 @@ type TenantSourceSpec struct {
 	// +optional
 	TargetNamespace *string `json:"targetNamespace,omitempty"`
 
+	// template defines default values applied to every DistributionTenant
+	// created by this source. DynamoDB items can override individual fields
+	// when the corresponding attribute mapping is configured.
+	// +optional
+	Template *TenantTemplate `json:"template,omitempty"`
+
 	// dryRun when true prevents the operator from creating or modifying
 	// DistributionTenant CRs. Instead, it logs what would be changed and
 	// updates status with a plan of pending changes. This is useful for
@@ -64,6 +70,42 @@ type TenantSourceSpec struct {
 	// +optional
 	// +kubebuilder:default=false
 	DryRun *bool `json:"dryRun,omitempty"`
+}
+
+// TenantTemplate defines default values applied to every DistributionTenant
+// created by a TenantSource. All fields are optional; DynamoDB items can
+// override individual fields via attribute mappings.
+type TenantTemplate struct {
+	// enabled indicates whether tenants should serve traffic. Defaults to true.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// connectionGroupId is the default connection group for all tenants.
+	// +optional
+	ConnectionGroupId *string `json:"connectionGroupId,omitempty"`
+
+	// parameters is a list of default key-value parameter values.
+	// +optional
+	Parameters []Parameter `json:"parameters,omitempty"`
+
+	// customizations allows overriding distribution-level settings.
+	// +optional
+	Customizations *Customizations `json:"customizations,omitempty"`
+
+	// managedCertificateRequest configures a CloudFront-managed ACM certificate
+	// for tenants. If a DynamoDB item provides a certificateArn, it takes
+	// precedence and the managed certificate is not used for that tenant.
+	// The primaryDomainName defaults to the tenant's first domain if not set.
+	// +optional
+	ManagedCertificateRequest *ManagedCertificateRequest `json:"managedCertificateRequest,omitempty"`
+
+	// tags is a list of default key-value tags for all tenants.
+	// +optional
+	Tags []Tag `json:"tags,omitempty"`
+
+	// dns configures automatic DNS record management for all tenants.
+	// +optional
+	DNS *DNSConfig `json:"dns,omitempty"`
 }
 
 // PostgresSourceConfig defines connection details for a PostgreSQL source.
@@ -81,26 +123,117 @@ type PostgresSourceConfig struct {
 }
 
 // DynamoDBSourceConfig defines connection details for a DynamoDB source.
+// Each attribute field specifies the DynamoDB attribute name that maps to the
+// corresponding DistributionTenant spec field. Only nameAttribute and
+// domainsAttribute are required; all others are optional and override template
+// values on a per-item basis.
 type DynamoDBSourceConfig struct {
-	// tableName is the DynamoDB table to scan or query.
+	// tableName is the DynamoDB table to scan.
 	// +kubebuilder:validation:Required
 	TableName string `json:"tableName"`
 
 	// region is the AWS region for the DynamoDB table.
+	// If not set, uses the operator's default region.
 	// +optional
 	Region *string `json:"region,omitempty"`
 
-	// nameAttribute is the attribute name in DynamoDB items that maps to
-	// the tenant name. Defaults to "name".
+	// nameAttribute is the DynamoDB attribute that maps to the tenant name
+	// (used as the DistributionTenant resource name). Defaults to "name".
 	// +optional
 	// +kubebuilder:default="name"
 	NameAttribute *string `json:"nameAttribute,omitempty"`
 
-	// domainAttribute is the attribute name in DynamoDB items that maps to
-	// the tenant domain. Defaults to "domain".
+	// domainsAttribute is the DynamoDB attribute that maps to the tenant's
+	// domains. Accepts a String (S) for a single domain or a StringSet (SS)
+	// for multiple domains. Defaults to "domains".
 	// +optional
-	// +kubebuilder:default="domain"
-	DomainAttribute *string `json:"domainAttribute,omitempty"`
+	// +kubebuilder:default="domains"
+	DomainsAttribute *string `json:"domainsAttribute,omitempty"`
+
+	// enabledAttribute is the DynamoDB attribute (boolean) that maps to
+	// spec.enabled. If not set, uses the template value or defaults to true.
+	// +optional
+	EnabledAttribute *string `json:"enabledAttribute,omitempty"`
+
+	// connectionGroupIdAttribute is the DynamoDB attribute that maps to
+	// spec.connectionGroupId.
+	// +optional
+	ConnectionGroupIdAttribute *string `json:"connectionGroupIdAttribute,omitempty"`
+
+	// certificateArnAttribute is the DynamoDB attribute that maps to
+	// spec.customizations.certificate.arn. When present, takes precedence
+	// over template.managedCertificateRequest. The ARN must refer to an ACM
+	// certificate in us-east-1.
+	// +optional
+	CertificateArnAttribute *string `json:"certificateArnAttribute,omitempty"`
+
+	// validationTokenHostAttribute is the DynamoDB attribute that overrides
+	// template.managedCertificateRequest.validationTokenHost per tenant.
+	// +optional
+	ValidationTokenHostAttribute *string `json:"validationTokenHostAttribute,omitempty"`
+
+	// primaryDomainNameAttribute is the DynamoDB attribute that overrides
+	// the primary domain for the managed certificate. If not set, defaults
+	// to the tenant's first domain.
+	// +optional
+	PrimaryDomainNameAttribute *string `json:"primaryDomainNameAttribute,omitempty"`
+
+	// certificateTransparencyLoggingPreferenceAttribute is the DynamoDB
+	// attribute that overrides the CT logging preference per tenant.
+	// +optional
+	CertificateTransparencyLoggingPreferenceAttribute *string `json:"certificateTransparencyLoggingPreferenceAttribute,omitempty"`
+
+	// dnsProviderAttribute is the DynamoDB attribute that overrides
+	// template.dns.provider per tenant.
+	// +optional
+	DNSProviderAttribute *string `json:"dnsProviderAttribute,omitempty"`
+
+	// hostedZoneIdAttribute is the DynamoDB attribute that overrides
+	// template.dns.hostedZoneId per tenant.
+	// +optional
+	HostedZoneIdAttribute *string `json:"hostedZoneIdAttribute,omitempty"`
+
+	// dnsTTLAttribute is the DynamoDB attribute (number) that overrides
+	// template.dns.ttl per tenant.
+	// +optional
+	DNSTTLAttribute *string `json:"dnsTTLAttribute,omitempty"`
+
+	// dnsAssumeRoleArnAttribute is the DynamoDB attribute that overrides
+	// template.dns.assumeRoleArn per tenant.
+	// +optional
+	DNSAssumeRoleArnAttribute *string `json:"dnsAssumeRoleArnAttribute,omitempty"`
+
+	// webAclActionAttribute is the DynamoDB attribute that overrides
+	// template.customizations.webAcl.action per tenant.
+	// +optional
+	WebAclActionAttribute *string `json:"webAclActionAttribute,omitempty"`
+
+	// webAclArnAttribute is the DynamoDB attribute that overrides
+	// template.customizations.webAcl.arn per tenant.
+	// +optional
+	WebAclArnAttribute *string `json:"webAclArnAttribute,omitempty"`
+
+	// geoRestrictionTypeAttribute is the DynamoDB attribute that overrides
+	// template.customizations.geoRestrictions.restrictionType per tenant.
+	// +optional
+	GeoRestrictionTypeAttribute *string `json:"geoRestrictionTypeAttribute,omitempty"`
+
+	// geoLocationsAttribute is the DynamoDB attribute (StringSet) that
+	// overrides template.customizations.geoRestrictions.locations per tenant.
+	// +optional
+	GeoLocationsAttribute *string `json:"geoLocationsAttribute,omitempty"`
+
+	// parametersAttribute is the DynamoDB attribute (Map) that overrides
+	// or merges with template.parameters per tenant. The map keys are
+	// parameter names and values are parameter values.
+	// +optional
+	ParametersAttribute *string `json:"parametersAttribute,omitempty"`
+
+	// tagsAttribute is the DynamoDB attribute (Map) that overrides or merges
+	// with template.tags per tenant. The map keys are tag keys and values
+	// are tag values.
+	// +optional
+	TagsAttribute *string `json:"tagsAttribute,omitempty"`
 }
 
 // SecretReference is a reference to a Kubernetes secret in the same namespace.
@@ -118,17 +251,22 @@ type TenantSourceStatus struct {
 
 	// tenantsDiscovered is the number of tenants found in the last poll.
 	// +optional
-	TenantsDiscovered int `json:"tenantsDiscovered,omitempty"`
+	TenantsDiscovered int `json:"tenantsDiscovered"`
 
 	// tenantsCreated is the number of DistributionTenant CRs created
 	// in the last poll cycle.
 	// +optional
-	TenantsCreated int `json:"tenantsCreated,omitempty"`
+	TenantsCreated int `json:"tenantsCreated"`
 
 	// tenantsUpdated is the number of DistributionTenant CRs updated
 	// in the last poll cycle.
 	// +optional
-	TenantsUpdated int `json:"tenantsUpdated,omitempty"`
+	TenantsUpdated int `json:"tenantsUpdated"`
+
+	// tenantsDeleted is the number of DistributionTenant CRs deleted
+	// in the last poll cycle.
+	// +optional
+	TenantsDeleted int `json:"tenantsDeleted"`
 
 	// pendingChanges describes what would change if dryRun were false.
 	// Only populated when dryRun is true.
@@ -190,6 +328,31 @@ type TenantSourceList struct {
 	metav1.ListMeta `json:"metadata,omitzero"`
 	Items           []TenantSource `json:"items"`
 }
+
+// TenantSource condition type constants.
+const (
+	// TSConditionTypeReady indicates the TenantSource is polling successfully.
+	TSConditionTypeReady = "Ready"
+)
+
+// TenantSource condition reason constants.
+const (
+	TSReasonPolling        = "Polling"
+	TSReasonPollSucceeded  = "PollSucceeded"
+	TSReasonPollFailed     = "PollFailed"
+	TSReasonSourceError    = "SourceError"
+	TSReasonConflict       = "Conflict"
+	TSReasonDeleting       = "Deleting"
+	TSReasonInvalidConfig  = "InvalidConfig"
+	TSReasonDryRunComplete = "DryRunComplete"
+)
+
+// TenantSourceFinalizerName is the finalizer used by the TenantSource controller.
+const TenantSourceFinalizerName = "cloudfront-tenant-operator.io/tenantsource-finalizer"
+
+// TenantSourceLabelKey is the label applied to DistributionTenant CRs managed
+// by a TenantSource, with the value set to the TenantSource's name.
+const TenantSourceLabelKey = "cloudfront-tenant-operator.io/source"
 
 func init() {
 	SchemeBuilder.Register(&TenantSource{}, &TenantSourceList{})

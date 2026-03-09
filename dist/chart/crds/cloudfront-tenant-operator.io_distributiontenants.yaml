@@ -210,7 +210,7 @@ spec:
                     description: |-
                       primaryDomainName is the primary domain for the managed certificate.
                       Must be one of the domains listed in spec.domains.
-                    minLength: 1
+                      If not set, defaults to the first domain in spec.domains.
                     type: string
                   validationTokenHost:
                     description: |-
@@ -223,7 +223,6 @@ spec:
                     - self-hosted
                     type: string
                 required:
-                - primaryDomainName
                 - validationTokenHost
                 type: object
               parameters:

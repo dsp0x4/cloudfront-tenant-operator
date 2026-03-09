@@ -8,7 +8,7 @@ A Kubernetes operator for managing [CloudFront Distribution Tenants](https://doc
 
 ```bash
 helm install cloudfront-tenant-operator \
-  oci://ghcr.io/dsp0x4/cloudfront-tenant-operator/charts/cloudfront-tenant-operator \
+  oci://ghcr.io/dsp0x4/charts/cloudfront-tenant-operator \
   --namespace cloudfront-tenant-operator-system \
   --create-namespace
 ```
@@ -80,6 +80,16 @@ If you use `spec.dns` for automatic Route53 record management, also add:
     "route53:GetChange"
   ],
   "Resource": "*"
+}
+```
+
+If you use `TenantSource` with `provider: dynamodb`, also add:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": ["dynamodb:Scan"],
+  "Resource": "arn:aws:dynamodb:*:*:table/<your-table-name>"
 }
 ```
 

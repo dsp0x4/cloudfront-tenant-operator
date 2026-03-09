@@ -189,9 +189,9 @@ type ManagedCertificateRequest struct {
 
 	// primaryDomainName is the primary domain for the managed certificate.
 	// Must be one of the domains listed in spec.domains.
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
-	PrimaryDomainName string `json:"primaryDomainName"`
+	// If not set, defaults to the first domain in spec.domains.
+	// +optional
+	PrimaryDomainName string `json:"primaryDomainName,omitempty"`
 
 	// certificateTransparencyLoggingPreference controls CT logging.
 	// +optional

@@ -81,6 +81,31 @@ Required only if you configure `spec.dns` on your tenants:
 
 If you use `spec.dns.assumeRoleArn` for cross-account DNS, the operator also needs `sts:AssumeRole` on the target role.
 
+### TenantSource (DynamoDB) permissions (optional)
+
+Required only if you use the `TenantSource` CRD with `provider: dynamodb`:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:Scan"
+      ],
+      "Resource": "arn:aws:dynamodb:*:*:table/<your-table-name>"
+    }
+  ]
+}
+```
+
+| Permission | Used For |
+|------------|----------|
+| `dynamodb:Scan` | Polling the DynamoDB table for tenant definitions |
+
+You can scope the `Resource` to specific table ARNs for least-privilege access.
+
 ## Install with Helm (Recommended)
 
 The chart is published as an OCI artifact. CRDs are bundled in the chart's `crds/` directory and are automatically installed on first `helm install`.

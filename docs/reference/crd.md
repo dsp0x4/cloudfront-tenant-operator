@@ -1,6 +1,6 @@
 # CRD Specification
 
-Full reference for the `DistributionTenant` custom resource.
+Full reference for the `DistributionTenant` and `TenantSource` custom resources.
 
 See the [Go type definitions](https://github.com/dsp0x4/cloudfront-tenant-operator/blob/main/api/v1alpha1/distributiontenant_types.go) and [example CRs](https://github.com/dsp0x4/cloudfront-tenant-operator/tree/main/config/samples/) for additional detail.
 
@@ -46,7 +46,7 @@ See the [Go type definitions](https://github.com/dsp0x4/cloudfront-tenant-operat
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `validationTokenHost` | string | Yes | Validation method: `"cloudfront"` or `"self-hosted"` |
-| `primaryDomainName` | string | Yes | Primary domain for the certificate (must be one of the `spec.domains`) |
+| `primaryDomainName` | string | No | Primary domain for the certificate (defaults to the first domain in `spec.domains`) |
 | `certificateTransparencyLoggingPreference` | string | No | `"enabled"` or `"disabled"` |
 
 ### DNSConfig
@@ -104,3 +104,96 @@ The Kubernetes resource name (`metadata.name`) is used as the CloudFront tenant 
 - 3-128 characters
 - Start and end with a lowercase alphanumeric character
 - Contain only lowercase alphanumerics, dots (`.`), and hyphens (`-`)
+
+---
+
+## TenantSource
+
+A `TenantSource` points to an external data source (currently DynamoDB) and automatically creates, updates, and deletes `DistributionTenant` CRs to match the external state.
+
+See the [Go type definitions](https://github.com/dsp0x4/cloudfront-tenant-operator/blob/main/api/v1alpha1/tenantsource_types.go) for additional detail.
+
+### Spec Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `provider` | string | Yes | External source type (`"dynamodb"`) |
+| `pollInterval` | duration | No | How often to poll the source (default: `5m`) |
+| `distributionId` | string | Yes | Default parent multi-tenant distribution ID for discovered tenants |
+| `targetNamespace` | string | No | Namespace for created DistributionTenants (default: TenantSource's namespace) |
+| `template` | `TenantTemplate` | No | Baseline values applied to every tenant (see below) |
+| `dryRun` | bool | No | When `true`, calculates changes without mutating CRs (default: `false`) |
+| `dynamodb` | `DynamoDBSourceConfig` | Conditional | DynamoDB source config (required when `provider` is `"dynamodb"`) |
+| `postgres` | `PostgresSourceConfig` | Conditional | PostgreSQL source config (not yet implemented) |
+
+### TenantTemplate
+
+Defines default values applied to every `DistributionTenant` created by the source. All fields are optional. DynamoDB items can override individual fields when the corresponding attribute mapping is configured.
+
+Precedence: **DynamoDB item value > template value > K8s default**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `enabled` | bool | No | Whether tenants serve traffic (default: `true`) |
+| `connectionGroupId` | string | No | Default connection group for all tenants |
+| `parameters` | array of `Parameter` | No | Default key-value parameters |
+| `customizations` | `Customizations` | No | Default WAF, certificate, and geo restriction settings |
+| `managedCertificateRequest` | `ManagedCertificateRequest` | No | Managed certificate config (same type as DistributionTenant; `primaryDomainName` defaults to the tenant's first domain). If a DynamoDB item provides a `certificateArn`, it takes precedence. Individual fields can be overridden per tenant via DynamoDB attribute mappings. |
+| `tags` | array of `Tag` | No | Default AWS resource tags |
+| `dns` | `DNSConfig` | No | Default DNS record management config |
+
+### DynamoDBSourceConfig
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `tableName` | string | Yes | DynamoDB table to scan |
+| `region` | string | No | AWS region for the table (default: operator's default region) |
+| `nameAttribute` | string | No | DynamoDB attribute for tenant name (default: `"name"`) |
+| `domainsAttribute` | string | No | DynamoDB attribute for tenant domains — accepts String (S) for a single domain or StringSet (SS) for multiple domains (default: `"domains"`) |
+| `enabledAttribute` | string | No | DynamoDB attribute (boolean) for `spec.enabled` |
+| `connectionGroupIdAttribute` | string | No | DynamoDB attribute for `spec.connectionGroupId` |
+| `certificateArnAttribute` | string | No | DynamoDB attribute for `spec.customizations.certificate.arn` — overrides template managed cert |
+| `validationTokenHostAttribute` | string | No | DynamoDB attribute to override `template.managedCertificateRequest.validationTokenHost` |
+| `primaryDomainNameAttribute` | string | No | DynamoDB attribute to override the managed certificate primary domain |
+| `certificateTransparencyLoggingPreferenceAttribute` | string | No | DynamoDB attribute to override CT logging preference |
+| `dnsProviderAttribute` | string | No | DynamoDB attribute to override `template.dns.provider` |
+| `hostedZoneIdAttribute` | string | No | DynamoDB attribute to override `template.dns.hostedZoneId` |
+| `dnsTTLAttribute` | string | No | DynamoDB attribute (number) to override `template.dns.ttl` |
+| `dnsAssumeRoleArnAttribute` | string | No | DynamoDB attribute to override `template.dns.assumeRoleArn` |
+| `webAclActionAttribute` | string | No | DynamoDB attribute to override `template.customizations.webAcl.action` |
+| `webAclArnAttribute` | string | No | DynamoDB attribute to override `template.customizations.webAcl.arn` |
+| `geoRestrictionTypeAttribute` | string | No | DynamoDB attribute to override `template.customizations.geoRestrictions.restrictionType` |
+| `geoLocationsAttribute` | string | No | DynamoDB attribute (StringSet) to override `template.customizations.geoRestrictions.locations` |
+| `parametersAttribute` | string | No | DynamoDB attribute (Map) to override `template.parameters` (replaces template entirely) |
+| `tagsAttribute` | string | No | DynamoDB attribute (Map) to override `template.tags` (replaces template entirely) |
+
+Each DynamoDB item produces one `DistributionTenant` CR. The `nameAttribute` value becomes the CR's `metadata.name`, and the `domainsAttribute` value becomes the `spec.domains` list.
+
+### TenantSource Status Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `lastPollTime` | timestamp | When the last successful poll occurred |
+| `tenantsDiscovered` | int | Number of items found in the last poll |
+| `tenantsCreated` | int | Number of CRs created in the last poll cycle |
+| `tenantsUpdated` | int | Number of CRs updated in the last poll cycle |
+| `tenantsDeleted` | int | Number of CRs deleted in the last poll cycle |
+| `pendingChanges` | array of `PendingChange` | Changes that would be made (only populated when `dryRun` is `true`) |
+| `conditions` | array of `Condition` | Standard Kubernetes conditions |
+
+### PendingChange
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `action` | string | `"create"`, `"update"`, or `"delete"` |
+| `tenantName` | string | Name of the DistributionTenant that would be affected |
+| `description` | string | Human-readable description of the change |
+
+### Ownership and Labeling
+
+Managed `DistributionTenant` CRs receive:
+
+- An **owner reference** pointing to the `TenantSource`, enabling Kubernetes garbage collection and efficient listing.
+- A **label** `cloudfront-tenant-operator.io/source: <tenantsource-name>` for easy `kubectl` filtering.
+
+The controller never modifies `DistributionTenant` resources that it does not own. If a user-created tenant has the same name as a DynamoDB item, the controller reports a conflict in its status conditions and skips that item.

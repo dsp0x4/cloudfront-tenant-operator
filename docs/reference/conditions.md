@@ -14,7 +14,7 @@ Indicates whether the tenant is fully deployed and serving traffic.
 | `False` | `Creating` | AWS resource creation is in progress |
 | `False` | `Deploying` | AWS deployment is in progress (after create or update) |
 | `False` | `Disabling` | Tenant is being disabled before deletion |
-| `False` | `Deleting` | Waiting for deployment to complete before deletion |
+| `False` | `Deleting` | Tenant is being deleted from AWS |
 | `False` | `DomainConflict` | Domain is already used by another distribution (terminal) |
 | `False` | `AccessDenied` | Insufficient IAM permissions (terminal) |
 | `False` | `InvalidSpec` | AWS rejected the request as invalid (terminal) |
@@ -65,3 +65,20 @@ These reasons are set on the `Ready` condition in specific scenarios:
 | `False` | `DomainValidationPending` | CloudFront cannot verify domain ownership yet (DNS propagation delay); retries every 5 minutes |
 | `False` | `MissingParameters` | Required distribution parameters are missing from the spec |
 | `False` | `MissingCertificate` | No certificate configured for a distribution that requires one |
+
+---
+
+## TenantSource Conditions
+
+The `TenantSource` resource uses a single `Ready` condition to indicate its polling status.
+
+### Ready
+
+| Status | Reason | Meaning |
+|--------|--------|---------|
+| `True` | `PollSucceeded` | Last poll completed successfully and CRs are in sync |
+| `True` | `DryRunComplete` | Dry run completed; pending changes are listed in status |
+| `False` | `PollFailed` | DynamoDB scan failed (check message for details) |
+| `False` | `Conflict` | Poll succeeded but some tenants could not be managed (name conflicts with user-created CRs) |
+| `False` | `InvalidConfig` | TenantSource spec is invalid (unsupported provider or missing config) |
+| `False` | `Deleting` | TenantSource is being deleted and owned CRs are being cleaned up |
