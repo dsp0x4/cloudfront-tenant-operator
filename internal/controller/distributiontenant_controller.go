@@ -185,22 +185,7 @@ func (r *DistributionTenantReconciler) reconcileDelete(ctx context.Context, tena
 		return ctrl.Result{RequeueAfter: requeueShort}, nil
 	}
 
-	// Step 2: Wait for Deployed status
-	if awsTenant.Status != "Deployed" {
-		log.Info("Waiting for distribution tenant to finish deploying before deletion",
-			"id", tenant.Status.ID, "status", awsTenant.Status)
-		// Keep distributionTenantStatus in sync with what AWS reports.
-		tenant.Status.DistributionTenantStatus = awsTenant.Status
-		tenant.Status.ETag = awsTenant.ETag
-		setCondition(tenant, cloudfrontv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
-			cloudfrontv1alpha1.ReasonDeleting, "Waiting for deployment to complete before deletion")
-		if err := r.Status().Update(ctx, tenant); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{RequeueAfter: requeueShort}, nil
-	}
-
-	// Step 3: Delete
+	// Step 2: Delete (optimistic — attempt immediately after disabling).
 	log.Info("Deleting distribution tenant from AWS", "id", tenant.Status.ID)
 	if err := r.CFClient.DeleteDistributionTenant(ctx, tenant.Status.ID, awsTenant.ETag); err != nil {
 		if cfaws.IsResourceNotDisabled(err) {
