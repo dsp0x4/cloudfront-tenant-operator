@@ -9,6 +9,7 @@ rules:
       - cloudfront-tenant-operator.io
     resources:
       - distributiontenants
+      - tenantsources
     verbs:
       - create
       - delete
@@ -21,12 +22,14 @@ rules:
       - cloudfront-tenant-operator.io
     resources:
       - distributiontenants/finalizers
+      - tenantsources/finalizers
     verbs:
       - update
   - apiGroups:
       - cloudfront-tenant-operator.io
     resources:
       - distributiontenants/status
+      - tenantsources/status
     verbs:
       - get
       - patch
