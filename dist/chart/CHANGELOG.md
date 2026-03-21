@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1
+
+### Improvements
+
+- Upgraded Go version.
+- Upgraded Go dependencies.
+
 ## 0.2.0
 
 ### Features
