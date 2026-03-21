@@ -1,5 +1,6 @@
 # cloudfront-tenant-operator
 
+[![Artifact HUB](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/cloudfront-tenant-operator)](https://artifacthub.io/packages/helm/cloudfront-tenant-operator/cloudfront-tenant-operator)
 [![Release](https://github.com/dsp0x4/cloudfront-tenant-operator/actions/workflows/release.yml/badge.svg)](https://github.com/dsp0x4/cloudfront-tenant-operator/actions/workflows/release.yml)
 [![Tests](https://github.com/dsp0x4/cloudfront-tenant-operator/actions/workflows/test.yml/badge.svg)](https://github.com/dsp0x4/cloudfront-tenant-operator/actions/workflows/test.yml)
 [![Lint](https://github.com/dsp0x4/cloudfront-tenant-operator/actions/workflows/lint.yml/badge.svg)](https://github.com/dsp0x4/cloudfront-tenant-operator/actions/workflows/lint.yml)
