@@ -78,7 +78,7 @@ The `TenantSource` resource uses a single `Ready` condition to indicate its poll
 |--------|--------|---------|
 | `True` | `PollSucceeded` | Last poll completed successfully and CRs are in sync |
 | `True` | `DryRunComplete` | Dry run completed; pending changes are listed in status |
-| `False` | `PollFailed` | DynamoDB scan failed (check message for details) |
+| `False` | `PollFailed` | Backend query failed (check message for the underlying error) |
 | `False` | `Conflict` | Poll succeeded but some tenants could not be managed (name conflicts with user-created CRs) |
-| `False` | `InvalidConfig` | TenantSource spec is invalid (unsupported provider or missing config) |
+| `False` | `InvalidConfig` | TenantSource spec is invalid (provider has no registered backend, or the provider-specific config block is missing) |
 | `False` | `Deleting` | TenantSource is being deleted and owned CRs are being cleaned up |

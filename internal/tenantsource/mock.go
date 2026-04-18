@@ -14,35 +14,37 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package aws
+package tenantsource
 
 import (
 	"context"
 	"sync"
 
-	"github.com/dsp0x4/cloudfront-tenant-operator/internal/tenantsource"
+	cloudfrontv1alpha1 "github.com/dsp0x4/cloudfront-tenant-operator/api/v1alpha1"
 )
 
-// MockDynamoDBClient implements DynamoDBClient for testing.
-type MockDynamoDBClient struct {
+// MockBackend is an in-memory Backend implementation for tests. Items and Err
+// are read on every call under a mutex, so they may be mutated between
+// reconciliations from the test body.
+type MockBackend struct {
 	mu sync.Mutex
 
-	Items []tenantsource.TenantItem
+	Items []TenantItem
 	Err   error
 
-	ScanCallCount int
+	QueryCallCount int
 }
 
-// ScanTenants returns the pre-configured items or error.
-func (m *MockDynamoDBClient) ScanTenants(_ context.Context, _ *ScanTenantsInput) ([]tenantsource.TenantItem, error) {
+// QueryTenants returns the pre-configured items or error.
+func (m *MockBackend) QueryTenants(_ context.Context, _ *cloudfrontv1alpha1.TenantSource) ([]TenantItem, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.ScanCallCount++
+	m.QueryCallCount++
 
 	if m.Err != nil {
 		return nil, m.Err
 	}
-	result := make([]tenantsource.TenantItem, len(m.Items))
+	result := make([]TenantItem, len(m.Items))
 	copy(result, m.Items)
 	return result, nil
 }

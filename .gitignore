@@ -43,3 +43,6 @@ dist/*.tgz
 
 # Kustomize installer bundle
 dist/install.yaml
+
+# Local Claude settings
+.claude/settings.local.json

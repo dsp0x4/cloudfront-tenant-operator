@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0
+
+### Improvements
+
+- **TenantSource backend abstraction** -- Extracted a provider-neutral `Backend` interface so additional external sources (PostgreSQL, MongoDB/DocumentDB, Redis) can be added as drop-in packages without controller changes. Behavior-preserving refactor: no CRD or API changes; DynamoDB remains the only registered backend.
+- Upgraded Go version.
+- Upgraded Go dependencies.
+
 ## 0.2.1
 
 ### Improvements

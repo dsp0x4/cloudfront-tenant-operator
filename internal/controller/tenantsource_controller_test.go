@@ -29,7 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudfrontv1alpha1 "github.com/dsp0x4/cloudfront-tenant-operator/api/v1alpha1"
-	cfaws "github.com/dsp0x4/cloudfront-tenant-operator/internal/aws"
+	"github.com/dsp0x4/cloudfront-tenant-operator/internal/tenantsource"
 )
 
 var _ = Describe("TenantSource Controller", func() {
@@ -42,19 +42,19 @@ var _ = Describe("TenantSource Controller", func() {
 
 	var (
 		ctx            context.Context
-		mockDB         *cfaws.MockDynamoDBClient
+		mockDB         *tenantsource.MockBackend
 		reconciler     *TenantSourceReconciler
 		namespacedName types.NamespacedName
 	)
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		mockDB = &cfaws.MockDynamoDBClient{}
+		mockDB = &tenantsource.MockBackend{}
 		reconciler = &TenantSourceReconciler{
 			Client: k8sClient,
 			Scheme: k8sClient.Scheme(),
-			NewDynamoDBClient: func(_ string) cfaws.DynamoDBClient {
-				return mockDB
+			Backends: map[string]tenantsource.Backend{
+				"dynamodb": mockDB,
 			},
 		}
 		namespacedName = types.NamespacedName{
@@ -102,7 +102,7 @@ var _ = Describe("TenantSource Controller", func() {
 	}
 
 	It("should add a finalizer and create tenants from DynamoDB scan", func() {
-		mockDB.Items = []cfaws.TenantItem{
+		mockDB.Items = []tenantsource.TenantItem{
 			{Name: "tenant-a", Domains: []string{"a.example.com"}},
 			{Name: "tenant-b", Domains: []string{"b.example.com"}},
 		}
@@ -149,7 +149,7 @@ var _ = Describe("TenantSource Controller", func() {
 	})
 
 	It("should update tenants when DynamoDB items change", func() {
-		mockDB.Items = []cfaws.TenantItem{
+		mockDB.Items = []tenantsource.TenantItem{
 			{Name: "tenant-a", Domains: []string{"a.example.com"}},
 		}
 
@@ -166,7 +166,7 @@ var _ = Describe("TenantSource Controller", func() {
 		Expect(tenant.Spec.Domains[0].Domain).To(Equal("a.example.com"))
 
 		// Change domain in DynamoDB
-		mockDB.Items = []cfaws.TenantItem{
+		mockDB.Items = []tenantsource.TenantItem{
 			{Name: "tenant-a", Domains: []string{"new-a.example.com"}},
 		}
 
@@ -182,7 +182,7 @@ var _ = Describe("TenantSource Controller", func() {
 	})
 
 	It("should delete tenants removed from DynamoDB", func() {
-		mockDB.Items = []cfaws.TenantItem{
+		mockDB.Items = []tenantsource.TenantItem{
 			{Name: "tenant-a", Domains: []string{"a.example.com"}},
 			{Name: "tenant-b", Domains: []string{"b.example.com"}},
 		}
@@ -195,7 +195,7 @@ var _ = Describe("TenantSource Controller", func() {
 		_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: namespacedName})
 
 		// Remove tenant-b from DynamoDB
-		mockDB.Items = []cfaws.TenantItem{
+		mockDB.Items = []tenantsource.TenantItem{
 			{Name: "tenant-a", Domains: []string{"a.example.com"}},
 		}
 
@@ -227,7 +227,7 @@ var _ = Describe("TenantSource Controller", func() {
 		Expect(k8sClient.Create(ctx, userTenant)).To(Succeed())
 
 		// DynamoDB has an item with the same name
-		mockDB.Items = []cfaws.TenantItem{
+		mockDB.Items = []tenantsource.TenantItem{
 			{Name: "user-tenant", Domains: []string{"dynamo.example.com"}},
 		}
 
@@ -252,7 +252,7 @@ var _ = Describe("TenantSource Controller", func() {
 	})
 
 	It("should populate pendingChanges in dry-run mode", func() {
-		mockDB.Items = []cfaws.TenantItem{
+		mockDB.Items = []tenantsource.TenantItem{
 			{Name: "tenant-a", Domains: []string{"a.example.com"}},
 		}
 
@@ -287,7 +287,7 @@ var _ = Describe("TenantSource Controller", func() {
 		connGroupId := "cg-123"
 		certArn := "arn:aws:acm:us-east-1:123:certificate/abc"
 
-		mockDB.Items = []cfaws.TenantItem{
+		mockDB.Items = []tenantsource.TenantItem{
 			{
 				Name:              "tenant-full",
 				Domains:           []string{"full.example.com"},
@@ -315,7 +315,7 @@ var _ = Describe("TenantSource Controller", func() {
 	})
 
 	It("should apply managed certificate request from template", func() {
-		mockDB.Items = []cfaws.TenantItem{
+		mockDB.Items = []tenantsource.TenantItem{
 			{Name: "tenant-managed-cert", Domains: []string{"managed.example.com"}},
 		}
 
@@ -342,7 +342,7 @@ var _ = Describe("TenantSource Controller", func() {
 
 	It("should prefer certificateArn over managed certificate request", func() {
 		certArn := "arn:aws:acm:us-east-1:123:certificate/custom"
-		mockDB.Items = []cfaws.TenantItem{
+		mockDB.Items = []tenantsource.TenantItem{
 			{Name: "tenant-custom-cert", Domains: []string{"custom.example.com"}, CertificateArn: &certArn},
 		}
 
@@ -367,7 +367,7 @@ var _ = Describe("TenantSource Controller", func() {
 	})
 
 	It("should not generate a diff when managed cert ARN is auto-attached", func() {
-		mockDB.Items = []cfaws.TenantItem{
+		mockDB.Items = []tenantsource.TenantItem{
 			{Name: "tenant-cert", Domains: []string{"cert.example.com"}},
 		}
 
@@ -409,7 +409,7 @@ var _ = Describe("TenantSource Controller", func() {
 	})
 
 	It("should handle DynamoDB scan errors gracefully", func() {
-		mockDB.Err = cfaws.ErrDynamoDBTableNotFound
+		mockDB.Err = tenantsource.ErrSourceNotFound
 
 		source := newTestSource()
 		Expect(k8sClient.Create(ctx, source)).To(Succeed())
@@ -429,7 +429,7 @@ var _ = Describe("TenantSource Controller", func() {
 		Expect(readyCond.Reason).To(Equal(cloudfrontv1alpha1.TSReasonPollFailed))
 	})
 
-	It("should reject unsupported providers", func() {
+	It("should reject providers that have no registered backend", func() {
 		source := newTestSource()
 		source.Spec.Provider = "postgres"
 		source.Spec.DynamoDB = nil
@@ -450,10 +450,14 @@ var _ = Describe("TenantSource Controller", func() {
 		readyCond := meta.FindStatusCondition(source.Status.Conditions, cloudfrontv1alpha1.TSConditionTypeReady)
 		Expect(readyCond).NotTo(BeNil())
 		Expect(readyCond.Reason).To(Equal(cloudfrontv1alpha1.TSReasonInvalidConfig))
+		// The message should name the missing provider and list the registered ones
+		// so operators can tell whether they made a typo or need to enable a backend.
+		Expect(readyCond.Message).To(ContainSubstring(`"postgres"`))
+		Expect(readyCond.Message).To(ContainSubstring("dynamodb"))
 	})
 
 	It("should delete owned tenants when TenantSource is deleted", func() {
-		mockDB.Items = []cfaws.TenantItem{
+		mockDB.Items = []tenantsource.TenantItem{
 			{Name: "tenant-a", Domains: []string{"a.example.com"}},
 		}
 
@@ -489,7 +493,7 @@ var _ = Describe("TenantSource Controller", func() {
 	It("should apply template DNS config to created tenants", func() {
 		hostedZone := testHostedZone
 		var ttl int64 = 600
-		mockDB.Items = []cfaws.TenantItem{
+		mockDB.Items = []tenantsource.TenantItem{
 			{Name: "tenant-dns", Domains: []string{"dns.example.com"}},
 		}
 
@@ -517,7 +521,7 @@ var _ = Describe("TenantSource Controller", func() {
 
 	It("should apply template parameters and tags", func() {
 		tagVal := "prod"
-		mockDB.Items = []cfaws.TenantItem{
+		mockDB.Items = []tenantsource.TenantItem{
 			{Name: "tenant-pt", Domains: []string{"pt.example.com"}},
 		}
 
@@ -548,7 +552,7 @@ var _ = Describe("TenantSource Controller", func() {
 
 	It("should apply template WebACL and geo restrictions", func() {
 		webAclArn := "arn:aws:wafv2:us-east-1:123:regional/webacl/test/abc"
-		mockDB.Items = []cfaws.TenantItem{
+		mockDB.Items = []tenantsource.TenantItem{
 			{Name: "tenant-waf", Domains: []string{"waf.example.com"}},
 		}
 
@@ -586,7 +590,7 @@ var _ = Describe("TenantSource Controller", func() {
 		hostedZone := testHostedZone
 		overrideZone := "Z9999999999"
 		var ttl int64 = 600
-		mockDB.Items = []cfaws.TenantItem{
+		mockDB.Items = []tenantsource.TenantItem{
 			{
 				Name:         "tenant-override",
 				Domains:      []string{"override.example.com"},
@@ -617,7 +621,7 @@ var _ = Describe("TenantSource Controller", func() {
 	})
 
 	It("should support multi-domain tenants", func() {
-		mockDB.Items = []cfaws.TenantItem{
+		mockDB.Items = []tenantsource.TenantItem{
 			{Name: "tenant-multi", Domains: []string{"a.example.com", "b.example.com", "c.example.com"}},
 		}
 
@@ -638,7 +642,7 @@ var _ = Describe("TenantSource Controller", func() {
 
 	It("should not update when template and DynamoDB produce same spec as existing CR", func() {
 		hostedZone := testHostedZone
-		mockDB.Items = []cfaws.TenantItem{
+		mockDB.Items = []tenantsource.TenantItem{
 			{Name: "tenant-nodiff", Domains: []string{"nodiff.example.com"}},
 		}
 
@@ -665,7 +669,7 @@ var _ = Describe("TenantSource Controller", func() {
 	})
 
 	It("should propagate template changes to existing tenants", func() {
-		mockDB.Items = []cfaws.TenantItem{
+		mockDB.Items = []tenantsource.TenantItem{
 			{Name: "tenant-tmpl", Domains: []string{"tmpl.example.com"}},
 		}
 
@@ -703,7 +707,7 @@ var _ = Describe("TenantSource Controller", func() {
 	It("should allow DynamoDB to override managed certificate fields", func() {
 		overrideHost := "self-hosted"
 		overridePrimary := "override.example.com"
-		mockDB.Items = []cfaws.TenantItem{
+		mockDB.Items = []tenantsource.TenantItem{
 			{
 				Name:                "tenant-cert-override",
 				Domains:             []string{"cert-override.example.com"},
@@ -732,7 +736,7 @@ var _ = Describe("TenantSource Controller", func() {
 	})
 
 	It("should preserve auto-attached cert ARN on update when using managed cert", func() {
-		mockDB.Items = []cfaws.TenantItem{
+		mockDB.Items = []tenantsource.TenantItem{
 			{Name: "tenant-preserve", Domains: []string{"preserve.example.com"}},
 		}
 
@@ -781,7 +785,7 @@ var _ = Describe("TenantSource Controller", func() {
 	})
 
 	It("should override template parameters when DynamoDB provides them", func() {
-		mockDB.Items = []cfaws.TenantItem{
+		mockDB.Items = []tenantsource.TenantItem{
 			{
 				Name:       "tenant-param-override",
 				Domains:    []string{"param.example.com"},

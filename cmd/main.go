@@ -41,6 +41,8 @@ import (
 	cfaws "github.com/dsp0x4/cloudfront-tenant-operator/internal/aws"
 	"github.com/dsp0x4/cloudfront-tenant-operator/internal/controller"
 	cfmetrics "github.com/dsp0x4/cloudfront-tenant-operator/internal/metrics"
+	"github.com/dsp0x4/cloudfront-tenant-operator/internal/tenantsource"
+	tsdynamodb "github.com/dsp0x4/cloudfront-tenant-operator/internal/tenantsource/dynamodb"
 	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	// +kubebuilder:scaffold:imports
 )
@@ -237,11 +239,8 @@ func main() {
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorder("tenantsource-controller"),
-		NewDynamoDBClient: func(region string) cfaws.DynamoDBClient {
-			if region != "" {
-				return cfaws.NewRealDynamoDBClientForRegion(awsCfg, region)
-			}
-			return cfaws.NewRealDynamoDBClient(awsCfg)
+		Backends: map[string]tenantsource.Backend{
+			"dynamodb": tsdynamodb.New(awsCfg),
 		},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "TenantSource")
