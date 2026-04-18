@@ -20,6 +20,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -35,7 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	cloudfrontv1alpha1 "github.com/dsp0x4/cloudfront-tenant-operator/api/v1alpha1"
-	cfaws "github.com/dsp0x4/cloudfront-tenant-operator/internal/aws"
+	"github.com/dsp0x4/cloudfront-tenant-operator/internal/tenantsource"
 )
 
 const (
@@ -43,13 +45,15 @@ const (
 )
 
 // TenantSourceReconciler reconciles a TenantSource object.
-// It polls an external data source (DynamoDB) and creates, updates, or deletes
-// DistributionTenant CRs to match the external state.
+// It polls an external data source and creates, updates, or deletes
+// DistributionTenant CRs to match the external state. The concrete source
+// implementation is chosen at reconcile time from Backends using the value of
+// spec.provider as the key.
 type TenantSourceReconciler struct {
 	client.Client
-	Scheme            *runtime.Scheme
-	Recorder          events.EventRecorder
-	NewDynamoDBClient func(region string) cfaws.DynamoDBClient
+	Scheme   *runtime.Scheme
+	Recorder events.EventRecorder
+	Backends map[string]tenantsource.Backend
 }
 
 // +kubebuilder:rbac:groups=cloudfront-tenant-operator.io,resources=tenantsources,verbs=get;list;watch;create;update;patch;delete
@@ -87,11 +91,12 @@ func (r *TenantSourceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
-	if result, err := r.validateSourceConfig(ctx, &source); result != nil {
+	backend, result, err := r.resolveBackend(ctx, &source)
+	if result != nil {
 		return *result, err
 	}
 
-	items, err := r.scanDynamoDB(ctx, &source)
+	items, err := backend.QueryTenants(ctx, &source)
 	if err != nil {
 		return r.handleScanError(ctx, &source, err)
 	}
@@ -126,51 +131,62 @@ func (r *TenantSourceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	return ctrl.Result{RequeueAfter: pollInterval}, nil
 }
 
-// validateSourceConfig checks that the TenantSource spec is valid.
-// Returns a non-nil result if the config is invalid (caller should return it).
-func (r *TenantSourceReconciler) validateSourceConfig(ctx context.Context, source *cloudfrontv1alpha1.TenantSource) (*ctrl.Result, error) {
-	var msg string
-	switch {
-	case source.Spec.Provider != "dynamodb":
-		msg = fmt.Sprintf("Provider %q is not yet supported", source.Spec.Provider)
-	case source.Spec.DynamoDB == nil:
-		msg = "spec.dynamodb is required when provider is 'dynamodb'"
-	default:
-		return nil, nil
+// resolveBackend looks up the Backend registered for spec.provider. If no
+// backend is registered it writes an InvalidConfig condition and returns a
+// non-nil ctrl.Result the caller should propagate.
+func (r *TenantSourceReconciler) resolveBackend(ctx context.Context, source *cloudfrontv1alpha1.TenantSource) (tenantsource.Backend, *ctrl.Result, error) {
+	backend, ok := r.Backends[source.Spec.Provider]
+	if !ok {
+		msg := fmt.Sprintf("Provider %q is not registered (known providers: %s)",
+			source.Spec.Provider, knownProviders(r.Backends))
+		r.setCondition(source, metav1.ConditionFalse, cloudfrontv1alpha1.TSReasonInvalidConfig, msg)
+		if err := r.Status().Update(ctx, source); err != nil {
+			return nil, &ctrl.Result{}, err
+		}
+		return nil, &ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
 	}
-
-	r.setCondition(source, metav1.ConditionFalse, cloudfrontv1alpha1.TSReasonInvalidConfig, msg)
-	if err := r.Status().Update(ctx, source); err != nil {
-		return &ctrl.Result{}, err
-	}
-	return &ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
+	return backend, nil, nil
 }
 
-// scanDynamoDB builds the scan input and calls the DynamoDB client.
-func (r *TenantSourceReconciler) scanDynamoDB(ctx context.Context, source *cloudfrontv1alpha1.TenantSource) ([]cfaws.TenantItem, error) {
-	region := ""
-	if source.Spec.DynamoDB.Region != nil {
-		region = *source.Spec.DynamoDB.Region
+// knownProviders returns a stable, comma-separated list of registered backend
+// keys for use in error messages. An empty registry produces "<none>".
+func knownProviders(backends map[string]tenantsource.Backend) string {
+	if len(backends) == 0 {
+		return "<none>"
 	}
-	dbClient := r.NewDynamoDBClient(region)
-	return dbClient.ScanTenants(ctx, buildScanInput(source.Spec.DynamoDB))
+	keys := make([]string, 0, len(backends))
+	for k := range backends {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, ", ")
 }
 
-// handleScanError updates the condition and status when a DynamoDB scan fails.
+// handleScanError updates the condition and status when a backend query fails.
 func (r *TenantSourceReconciler) handleScanError(ctx context.Context, source *cloudfrontv1alpha1.TenantSource, scanErr error) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
-	log.Error(scanErr, "Failed to scan DynamoDB table", "table", source.Spec.DynamoDB.TableName)
+	log.Error(scanErr, "Failed to query tenant source", "provider", source.Spec.Provider)
+
+	// Invalid config surfaced by a backend (e.g. spec.dynamodb missing) is
+	// reported as InvalidConfig rather than PollFailed so users see the same
+	// reason whether the issue was caught during backend resolution or later.
+	reason := cloudfrontv1alpha1.TSReasonPollFailed
+	if errors.Is(scanErr, tenantsource.ErrSourceInvalidConfig) {
+		reason = cloudfrontv1alpha1.TSReasonInvalidConfig
+	}
 
 	r.setCondition(source, metav1.ConditionFalse,
-		cloudfrontv1alpha1.TSReasonPollFailed,
-		fmt.Sprintf("DynamoDB scan failed: %v", scanErr))
+		reason,
+		fmt.Sprintf("Tenant source query failed: %v", scanErr))
 	if statusErr := r.Status().Update(ctx, source); statusErr != nil {
 		return ctrl.Result{}, statusErr
 	}
-	r.recordEvent(source, "Warning", cloudfrontv1alpha1.TSReasonPollFailed,
-		fmt.Sprintf("Failed to scan DynamoDB table %q: %v", source.Spec.DynamoDB.TableName, scanErr))
+	r.recordEvent(source, "Warning", reason,
+		fmt.Sprintf("Failed to query tenant source (provider=%s): %v", source.Spec.Provider, scanErr))
 
-	if errors.Is(scanErr, cfaws.ErrAccessDenied) || errors.Is(scanErr, cfaws.ErrDynamoDBTableNotFound) {
+	if errors.Is(scanErr, tenantsource.ErrSourceAccessDenied) ||
+		errors.Is(scanErr, tenantsource.ErrSourceNotFound) ||
+		errors.Is(scanErr, tenantsource.ErrSourceInvalidConfig) {
 		return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
 	}
 	return ctrl.Result{RequeueAfter: tsRequeueShort}, nil
@@ -181,12 +197,12 @@ func (r *TenantSourceReconciler) handleScanError(ctx context.Context, source *cl
 func (r *TenantSourceReconciler) syncTenants(
 	ctx context.Context,
 	source *cloudfrontv1alpha1.TenantSource,
-	items []cfaws.TenantItem,
+	items []tenantsource.TenantItem,
 	existingTenants []cloudfrontv1alpha1.DistributionTenant,
 	targetNS string,
 	isDryRun bool,
 ) syncResult {
-	desired := make(map[string]cfaws.TenantItem, len(items))
+	desired := make(map[string]tenantsource.TenantItem, len(items))
 	for _, item := range items {
 		desired[item.Name] = item
 	}
@@ -263,7 +279,7 @@ func (r *TenantSourceReconciler) syncNewTenant(
 	ctx context.Context,
 	source *cloudfrontv1alpha1.TenantSource,
 	spec cloudfrontv1alpha1.DistributionTenantSpec,
-	item cfaws.TenantItem,
+	item tenantsource.TenantItem,
 	name, targetNS string,
 	isDryRun bool,
 	sr *syncResult,
@@ -306,7 +322,7 @@ func (r *TenantSourceReconciler) syncNewTenant(
 // updateSyncStatus populates the TenantSource status after a sync.
 func (r *TenantSourceReconciler) updateSyncStatus(
 	source *cloudfrontv1alpha1.TenantSource,
-	items []cfaws.TenantItem,
+	items []tenantsource.TenantItem,
 	sr syncResult,
 	isDryRun bool,
 ) {
@@ -410,7 +426,7 @@ func (r *TenantSourceReconciler) isOwnedBySource(dt *cloudfrontv1alpha1.Distribu
 // buildTenantSpec creates a DistributionTenantSpec by starting from the
 // TenantSource template and overlaying per-item DynamoDB values.
 // Precedence: DynamoDB item value > template value > K8s default.
-func (r *TenantSourceReconciler) buildTenantSpec(source *cloudfrontv1alpha1.TenantSource, item cfaws.TenantItem) cloudfrontv1alpha1.DistributionTenantSpec {
+func (r *TenantSourceReconciler) buildTenantSpec(source *cloudfrontv1alpha1.TenantSource, item tenantsource.TenantItem) cloudfrontv1alpha1.DistributionTenantSpec {
 	tmpl := source.Spec.Template
 
 	spec := cloudfrontv1alpha1.DistributionTenantSpec{
@@ -457,7 +473,7 @@ func (r *TenantSourceReconciler) buildTenantSpec(source *cloudfrontv1alpha1.Tena
 func (r *TenantSourceReconciler) buildCertificateFields(
 	spec *cloudfrontv1alpha1.DistributionTenantSpec,
 	tmpl *cloudfrontv1alpha1.TenantTemplate,
-	item cfaws.TenantItem,
+	item tenantsource.TenantItem,
 ) {
 	if item.CertificateArn != nil {
 		if spec.Customizations == nil {
@@ -503,7 +519,7 @@ func (r *TenantSourceReconciler) buildCertificateFields(
 func (r *TenantSourceReconciler) buildDNSFields(
 	spec *cloudfrontv1alpha1.DistributionTenantSpec,
 	tmpl *cloudfrontv1alpha1.TenantTemplate,
-	item cfaws.TenantItem,
+	item tenantsource.TenantItem,
 ) {
 	var base *cloudfrontv1alpha1.DNSConfig
 	if tmpl != nil && tmpl.DNS != nil {
@@ -538,7 +554,7 @@ func (r *TenantSourceReconciler) buildDNSFields(
 func (r *TenantSourceReconciler) buildCustomizationFields(
 	spec *cloudfrontv1alpha1.DistributionTenantSpec,
 	tmpl *cloudfrontv1alpha1.TenantTemplate,
-	item cfaws.TenantItem,
+	item tenantsource.TenantItem,
 ) {
 	var tmplCustom *cloudfrontv1alpha1.Customizations
 	if tmpl != nil {
@@ -596,7 +612,7 @@ func (r *TenantSourceReconciler) buildCustomizationFields(
 func (r *TenantSourceReconciler) buildParameterFields(
 	spec *cloudfrontv1alpha1.DistributionTenantSpec,
 	tmpl *cloudfrontv1alpha1.TenantTemplate,
-	item cfaws.TenantItem,
+	item tenantsource.TenantItem,
 ) {
 	if item.Parameters != nil {
 		for k, v := range item.Parameters {
@@ -613,7 +629,7 @@ func (r *TenantSourceReconciler) buildParameterFields(
 func (r *TenantSourceReconciler) buildTagFields(
 	spec *cloudfrontv1alpha1.DistributionTenantSpec,
 	tmpl *cloudfrontv1alpha1.TenantTemplate,
-	item cfaws.TenantItem,
+	item tenantsource.TenantItem,
 ) {
 	if item.Tags != nil {
 		for k, v := range item.Tags {
@@ -889,71 +905,6 @@ func ptrFromTemplate[T any](tmpl *cloudfrontv1alpha1.TenantTemplate, fn func(*cl
 		return zero
 	}
 	return fn(tmpl)
-}
-
-func buildScanInput(cfg *cloudfrontv1alpha1.DynamoDBSourceConfig) *cfaws.ScanTenantsInput {
-	input := &cfaws.ScanTenantsInput{
-		TableName:        cfg.TableName,
-		NameAttribute:    "name",
-		DomainsAttribute: "domains",
-	}
-
-	if cfg.NameAttribute != nil {
-		input.NameAttribute = *cfg.NameAttribute
-	}
-	if cfg.DomainsAttribute != nil {
-		input.DomainsAttribute = *cfg.DomainsAttribute
-	}
-	if cfg.EnabledAttribute != nil {
-		input.EnabledAttribute = *cfg.EnabledAttribute
-	}
-	if cfg.ConnectionGroupIdAttribute != nil {
-		input.ConnectionGroupIdAttribute = *cfg.ConnectionGroupIdAttribute
-	}
-	if cfg.CertificateArnAttribute != nil {
-		input.CertificateArnAttribute = *cfg.CertificateArnAttribute
-	}
-	if cfg.ValidationTokenHostAttribute != nil {
-		input.ValidationTokenHostAttribute = *cfg.ValidationTokenHostAttribute
-	}
-	if cfg.PrimaryDomainNameAttribute != nil {
-		input.PrimaryDomainNameAttribute = *cfg.PrimaryDomainNameAttribute
-	}
-	if cfg.CertificateTransparencyLoggingPreferenceAttribute != nil {
-		input.CertificateTransparencyLoggingPreferenceAttribute = *cfg.CertificateTransparencyLoggingPreferenceAttribute
-	}
-	if cfg.DNSProviderAttribute != nil {
-		input.DNSProviderAttribute = *cfg.DNSProviderAttribute
-	}
-	if cfg.HostedZoneIdAttribute != nil {
-		input.HostedZoneIdAttribute = *cfg.HostedZoneIdAttribute
-	}
-	if cfg.DNSTTLAttribute != nil {
-		input.DNSTTLAttribute = *cfg.DNSTTLAttribute
-	}
-	if cfg.DNSAssumeRoleArnAttribute != nil {
-		input.DNSAssumeRoleArnAttribute = *cfg.DNSAssumeRoleArnAttribute
-	}
-	if cfg.WebAclActionAttribute != nil {
-		input.WebAclActionAttribute = *cfg.WebAclActionAttribute
-	}
-	if cfg.WebAclArnAttribute != nil {
-		input.WebAclArnAttribute = *cfg.WebAclArnAttribute
-	}
-	if cfg.GeoRestrictionTypeAttribute != nil {
-		input.GeoRestrictionTypeAttribute = *cfg.GeoRestrictionTypeAttribute
-	}
-	if cfg.GeoLocationsAttribute != nil {
-		input.GeoLocationsAttribute = *cfg.GeoLocationsAttribute
-	}
-	if cfg.ParametersAttribute != nil {
-		input.ParametersAttribute = *cfg.ParametersAttribute
-	}
-	if cfg.TagsAttribute != nil {
-		input.TagsAttribute = *cfg.TagsAttribute
-	}
-
-	return input
 }
 
 func (r *TenantSourceReconciler) setCondition(source *cloudfrontv1alpha1.TenantSource, status metav1.ConditionStatus, reason, message string) {

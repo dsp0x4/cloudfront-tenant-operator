@@ -18,6 +18,11 @@ internal/aws/
   errors.go                              # Error classification (terminal vs retryable)
   mock.go                                # Mock clients for testing
   dynamodb_mock.go                       # Mock DynamoDB client for testing
+internal/tenantsource/
+  backend.go                             # Backend interface + provider-neutral TenantItem
+  errors.go                              # Provider-neutral sentinel errors (NotFound, AccessDenied, ...)
+  mock.go                                # MockBackend for controller tests
+  dynamodb/backend.go                    # DynamoDB Backend adapter (scan input + error translation)
 internal/metrics/
   metrics.go                             # Prometheus metric definitions
   tenant_collector.go                    # prometheus.Collector for tenant counts
@@ -44,15 +49,15 @@ The controller follows a multi-phase reconciliation loop:
 
 ## TenantSource Reconciliation Flow
 
-The `TenantSource` controller manages `DistributionTenant` CRs from an external data source (currently DynamoDB).
+The `TenantSource` controller manages `DistributionTenant` CRs from an external data source. It is **backend-agnostic**: the reconciler dispatches to a `tenantsource.Backend` implementation selected from a provider registry using the value of `spec.provider`. The DynamoDB backend ships today; additional backends (PostgreSQL, MongoDB/DocumentDB, Redis) are on the roadmap and plug in without controller changes.
 
-1. **Poll**: Scan the DynamoDB table and map items to `TenantItem` structs using the configured attribute mappings. Domains can be a single String (S) or a StringSet (SS).
-2. **Build spec**: For each item, start from the `spec.template` baseline and overlay per-item DynamoDB values. Precedence: **DynamoDB item value > template value > K8s default**. Certificate handling follows three-way precedence: explicit `certificateArn` > managed cert with per-item overrides > template managed cert.
-3. **Diff**: Compare desired state (template + DynamoDB) with existing owned `DistributionTenant` CRs.
+1. **Poll**: Call the registered `Backend.QueryTenants`, which returns a list of provider-neutral `TenantItem` values. The DynamoDB backend maps table attributes according to the configured `*Attribute` mappings; domains may be a single String (S) or a StringSet (SS).
+2. **Build spec**: For each item, start from the `spec.template` baseline and overlay per-item values. Precedence: **source item value > template value > K8s default**. Certificate handling follows three-way precedence: explicit `certificateArn` > managed cert with per-item overrides > template managed cert.
+3. **Diff**: Compare desired state (template + source items) with existing owned `DistributionTenant` CRs.
 4. **Sync**:
-    - **Create**: DynamoDB item exists, no matching CR -> create CR with owner reference and source label.
-    - **Update**: DynamoDB item exists, CR exists but spec differs -> update CR (auto-attached certificate ARN is preserved).
-    - **Delete**: CR exists, no matching DynamoDB item -> delete CR (the `DistributionTenant` controller handles AWS cleanup).
+    - **Create**: source item exists, no matching CR -> create CR with owner reference and source label.
+    - **Update**: source item exists, CR exists but spec differs -> update CR (auto-attached certificate ARN is preserved).
+    - **Delete**: CR exists, no matching source item -> delete CR (the `DistributionTenant` controller handles AWS cleanup).
 5. **Dry run**: If `spec.dryRun` is `true`, populate `status.pendingChanges` instead of mutating CRs.
 6. **Status**: Update `lastPollTime`, `tenantsDiscovered`, `tenantsCreated`, `tenantsUpdated`, `tenantsDeleted`, and conditions.
 7. **Requeue**: After `pollInterval` (default 5 minutes).

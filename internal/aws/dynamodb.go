@@ -29,11 +29,12 @@ import (
 	"github.com/aws/smithy-go"
 
 	cfmetrics "github.com/dsp0x4/cloudfront-tenant-operator/internal/metrics"
+	"github.com/dsp0x4/cloudfront-tenant-operator/internal/tenantsource"
 )
 
 // DynamoDBClient defines the interface for scanning tenant data from DynamoDB.
 type DynamoDBClient interface {
-	ScanTenants(ctx context.Context, input *ScanTenantsInput) ([]TenantItem, error)
+	ScanTenants(ctx context.Context, input *ScanTenantsInput) ([]tenantsource.TenantItem, error)
 }
 
 // ScanTenantsInput contains the parameters for scanning a DynamoDB table.
@@ -71,33 +72,6 @@ type ScanTenantsInput struct {
 	TagsAttribute       string
 }
 
-// TenantItem represents a single tenant discovered from DynamoDB.
-type TenantItem struct {
-	Name    string
-	Domains []string
-
-	Enabled           *bool
-	ConnectionGroupId *string
-	CertificateArn    *string
-
-	ValidationTokenHost                      *string
-	PrimaryDomainName                        *string
-	CertificateTransparencyLoggingPreference *string
-
-	DNSProvider      *string
-	HostedZoneId     *string
-	DNSTTL           *int64
-	DNSAssumeRoleArn *string
-
-	WebAclAction       *string
-	WebAclArn          *string
-	GeoRestrictionType *string
-	GeoLocations       []string
-
-	Parameters map[string]string
-	Tags       map[string]string
-}
-
 // dynamoDBAPI defines the subset of the AWS DynamoDB SDK client we use.
 type dynamoDBAPI interface {
 	Scan(ctx context.Context, params *dynamodb.ScanInput, optFns ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error)
@@ -127,11 +101,11 @@ func NewRealDynamoDBClientForRegion(cfg aws.Config, region string) *RealDynamoDB
 
 // ScanTenants performs a full Scan of the DynamoDB table and maps items to
 // TenantItems using the attribute mappings in the input.
-func (c *RealDynamoDBClient) ScanTenants(ctx context.Context, input *ScanTenantsInput) ([]TenantItem, error) {
+func (c *RealDynamoDBClient) ScanTenants(ctx context.Context, input *ScanTenantsInput) ([]tenantsource.TenantItem, error) {
 	start := time.Now()
 	defer observeAWSLatency("DynamoDBScan", start)
 
-	var items []TenantItem
+	var items []tenantsource.TenantItem
 	var lastKey map[string]dbtypes.AttributeValue
 
 	for {
@@ -164,8 +138,8 @@ func (c *RealDynamoDBClient) ScanTenants(ctx context.Context, input *ScanTenants
 
 // mapDynamoItem converts a raw DynamoDB item to a TenantItem using the
 // attribute mappings. Returns an error if required fields are missing.
-func mapDynamoItem(item map[string]dbtypes.AttributeValue, input *ScanTenantsInput) (TenantItem, error) {
-	tenant := TenantItem{}
+func mapDynamoItem(item map[string]dbtypes.AttributeValue, input *ScanTenantsInput) (tenantsource.TenantItem, error) {
+	tenant := tenantsource.TenantItem{}
 
 	name, ok := getStringAttr(item, input.NameAttribute)
 	if !ok || name == "" {
